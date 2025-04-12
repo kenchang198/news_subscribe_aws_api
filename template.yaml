@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: News Subscribe App - API Function
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+  Api:
+    Cors:
+      AllowMethods: "'GET,OPTIONS'"
+      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
+
+Resources:
+  # API用のLambda関数
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.9
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref S3BucketName
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref S3BucketName
+      Events:
+        # エピソード一覧取得API
+        GetEpisodes:
+          Type: Api
+          Properties:
+            Path: /api/episodes
+            Method: GET
+            RestApiId: !Ref NewsApi
+        
+        # 特定のエピソード取得API
+        GetEpisode:
+          Type: Api
+          Properties:
+            Path: /api/episodes/{episode_id}
+            Method: GET
+            RestApiId: !Ref NewsApi
+        
+        # 記事の要約取得API
+        GetArticleSummary:
+          Type: Api
+          Properties:
+            Path: /api/articles/{article_id}/summary
+            Method: GET
+            RestApiId: !Ref NewsApi
+        
+        # 記事の音声URL取得API
+        GetArticleAudio:
+          Type: Api
+          Properties:
+            Path: /api/articles/{article_id}/audio
+            Method: GET
+            RestApiId: !Ref NewsApi
+
+  # APIゲートウェイ
+  NewsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: news-audio-files-kenchang198-dev
+    Description: Name of the S3 bucket for storing audio files
+
+Outputs:
+  ApiFunction:
+    Description: API Lambda Function ARN
+    Value: !GetAtt ApiFunction.Arn
+  
+  NewsApiEndpoint:
+    Description: API Gateway Endpoint URL
+    Value: !Sub "https://${NewsApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  
+  S3BucketName:
+    Description: S3 bucket for audio files
+    Value: !Ref S3BucketName
