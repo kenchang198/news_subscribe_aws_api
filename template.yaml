@@ -28,6 +28,11 @@ Resources:
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref S3BucketName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - apigateway:*
+              Resource: "*"
       Events:
         # エピソード一覧取得API
         GetEpisodes:
@@ -65,7 +70,7 @@ Resources:
   NewsApi:
     Type: AWS::Serverless::Api
     Properties:
-      StageName: prod
+      StageName: v1
       Cors:
         AllowMethods: "'GET,OPTIONS'"
         AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
@@ -84,7 +89,7 @@ Outputs:
   
   NewsApiEndpoint:
     Description: API Gateway Endpoint URL
-    Value: !Sub "https://${NewsApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+    Value: !Sub "https://${NewsApi}.execute-api.${AWS::Region}.amazonaws.com/v1/"
   
   S3BucketName:
     Description: S3 bucket for audio files
