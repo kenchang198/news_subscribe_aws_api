@@ -47,7 +47,7 @@ def get_s3_path_from_url(url, bucket_name):
     if not url:  # URLが空やNoneの場合はNoneを返す
         return None
     try:
-        # Try different S3 URL patterns, including region-specific and path-style
+        # Try different S3 URL patterns
         patterns = [
             f"https://{bucket_name}.s3.amazonaws.com/",
             # リージョン指定のURL形式 (行分割)
@@ -60,15 +60,12 @@ def get_s3_path_from_url(url, bucket_name):
                 return url[len(pattern):].split('?')[0]  # クエリパラメータを除去
 
         # Assume path-style URL if no standard pattern matches
-        # and bucket name is in the path
-        # e.g., https://some.domain/bucket_name/path/to/object
         if f"/{bucket_name}/" in url:
             # バケット名の後からがオブジェクトキー
             return url.split(f"/{bucket_name}/", 1)[1].split('?')[0]
 
         logger.warning(f"Unrecognized S3 URL format or bucket mismatch: {url}")
-        # ここでNoneを返すか、エラーを発生させるかは要件次第
-        return None  # Return None if format is unknown
+        return None
     except Exception as e:
         logger.error(f"Error extracting S3 path from URL '{url}': {str(e)}")
         return None
@@ -92,7 +89,8 @@ def generate_presigned_url(bucket_name, object_key, expiration=3600):
             },
             ExpiresIn=expiration  # 有効期限（秒）
         )
-        # logger.debug(f"Generated presigned URL for {object_key}: {presigned_url}")
+        # logger.debug(f"Generated presigned URL for {object_key}: "
+        #                f"{presigned_url}")
         return presigned_url
     except Exception as e:
         # エラー発生時はログ記録し、Noneを返す
@@ -106,8 +104,7 @@ def get_episodes_list(page=1, limit=10):
     エピソード一覧を取得する（ページネーション対応）。
     現状はエピソードの基本情報のみを返す。署名付きURLは含めない。
     """
-    # TODO: シームレス再生対応後のエピソードリストの形式を検討する必要がある。
-    #       例えば、各エピソードのイントロ音声URLや記事数を返すなど。
+    # TODO: シームレス再生対応後のエピソードリストの形式を検討。
     #       キャッシュ戦略も検討（例: ETag, Last-Modifiedヘッダー）
     try:
         # S3からエピソードリストJSONを取得
@@ -120,7 +117,6 @@ def get_episodes_list(page=1, limit=10):
             response['Body'].read().decode('utf-8'))
 
         # 日付（例: 'episode_id' や 'created_at'）で降順ソート
-        # キーが存在しない場合のエラーを避けるため .get を使用
         try:
             episodes_list_data.sort(
                 key=lambda x: x.get('episode_id', '0000-00-00'), reverse=True
@@ -130,7 +126,7 @@ def get_episodes_list(page=1, limit=10):
 
         # ページネーション処理
         total_episodes = len(episodes_list_data)
-        total_pages = (total_episodes + limit - 1) // limit  # ページ数計算（切り上げ）
+        total_pages = (total_episodes + limit - 1) // limit  # ページ数計算
 
         # 1ベースのページ番号を0ベースのインデックスに変換
         start_idx = (page - 1) * limit
@@ -145,32 +141,34 @@ def get_episodes_list(page=1, limit=10):
             paginated_episodes_data = episodes_list_data[start_idx:end_idx]
 
         # レスポンスに含めるエピソード情報を整形
-        # 詳細情報は get_episode で取得するため、ここでは基本情報のみ
         processed_episodes = []
         for episode in paginated_episodes_data:
             processed_episodes.append({
                 "episode_id": episode.get("episode_id"),
                 "title": episode.get("title"),
                 "created_at": episode.get("created_at"),
-                # 必要に応じてサムネイルURLや簡単な説明などを追加
             })
 
-        return create_response(200, {
+        # エピソードリストがない場合のレスポンスを修正
+        response_data = {
             'episodes': processed_episodes,
             'totalPages': total_pages,
-            'currentPage': page,  # 補正されたページ番号
+            'currentPage': page,
             'totalEpisodes': total_episodes
-        })
+        }
+        return create_response(200, response_data)
 
     except s3_client.exceptions.NoSuchKey:
         logger.error("episodes_list.json not found in S3.")
-        # エピソードリストがない場合は空のリストを返すか、エラーにするか選択
-        return create_response(200, {
+        # エピソードリストがない場合は空のリストを返す
+        empty_response = {
             'episodes': [], 'totalPages': 0, 'currentPage': 1, 'totalEpisodes': 0
-        })
+        }
+        return create_response(200, empty_response)
     except Exception as e:
         logger.error(f"Error getting episode list: {str(e)}", exc_info=True)
-        return create_response(500, {'error': 'Failed to retrieve episode list'})
+        error_response = {'error': 'Failed to retrieve episode list'}
+        return create_response(500, error_response)
 
 
 def get_episode(episode_id):
@@ -196,7 +194,6 @@ def get_episode(episode_id):
         # --- プレイリストと記事情報の構築 ---
 
         # 1. エピソードイントロ音声
-        # episode_dataから 'intro_audio_url' を取得、なければ空文字列
         intro_audio_url = episode_data.get('intro_audio_url', '')
         intro_audio_key = get_s3_path_from_url(intro_audio_url, S3_BUCKET_NAME)
         intro_presigned_url = generate_presigned_url(
@@ -291,23 +288,24 @@ def get_episode(episode_id):
                     if transition_presigned_url:
                         playlist.append({
                             "type": "transition",
-                            # "from_article_id": article_id, # 必要なら追加
-                            # "to_article_id": articles[i+1].get('id'), # 必要なら追加
+                            # "from_article_id": article_id,
+                            # "to_article_id": articles[i+1].get('id'),
                             "audio_url": transition_presigned_url
                         })
                         logger.debug(
                             f"Added transition audio to playlist after "
                             f"article {article_id}")
                     else:
+                        # ログメッセージを短縮
                         logger.warning(
-                            f"Transition audio URL missing, invalid, or "
-                            f"presigning failed after article {article_id}. "
+                            f"Transition audio failed for art {article_id}. "
                             f"URL: '{transition_url}', Key: '{transition_key}'")
                 else:
                     # トランジションURLがリストに足りない場合
+                    # ログメッセージを短縮
                     logger.warning(
-                        f"Missing transition audio URL in 'transition_audio_urls' "
-                        f"list after article {article_id} (index {i})")
+                        f"Missing transition audio URL after art "
+                        f"{article_id} (idx {i})")
 
             # 処理済み記事リストに追加（署名付きURLを含む）
             processed_articles.append({
@@ -360,22 +358,27 @@ def get_episode(episode_id):
         logger.warning(
             f"Episode data not found in S3 for episode_id: {episode_id} "
             f"(Key: {s3_key})")
-        return create_response(404, {'error': f'Episode {episode_id} not found'})
+        error_response = {'error': f'Episode {episode_id} not found'}
+        return create_response(404, error_response)
     except json.JSONDecodeError as json_e:
         # JSONファイルのパースに失敗した場合
         logger.error(
             f"Failed to decode JSON for episode {episode_id} from key "
             f"{s3_key}: {json_e}")
-        return create_response(500,
-                               {'error': f'Invalid data format for episode {episode_id}'})
+        error_response = {
+            'error': f'Invalid data format for episode {episode_id}'
+        }
+        return create_response(500, error_response)
     except Exception as e:
         # その他の予期せぬエラー
         # スタックトレースもログに出力
         logger.error(
             f"Unexpected error getting episode {episode_id}: {str(e)}",
             exc_info=True)
-        return create_response(500,
-                               {'error': f'Failed to retrieve episode details for {episode_id}'})
+        error_response = {
+            'error': f'Failed to retrieve episode details for {episode_id}'
+        }
+        return create_response(500, error_response)
 
 # --- 以下の関数は現状維持または削除検討 ---
 
@@ -383,16 +386,24 @@ def get_episode(episode_id):
 #      """記事の要約を取得（現在は未使用）"""
 #      # このAPIエンドポイントがまだ必要か確認。
 #      # get_episode で記事情報は取得済みのため、不要な可能性が高い。
-#      logger.info(f"Request for article summary (currently not implemented): {article_id}, lang: {language}")
+#      log_msg = (f"Request for article summary (not implemented): "
+#                 f"{article_id}, lang: {language}")
+#      logger.info(log_msg)
 #      # 必要に応じて実装 or 削除
-#      return create_response(501, {"message": "API endpoint '/articles/{id}/summary' is not implemented or deprecated."})
+#      msg = ("API endpoint '/articles/{id}/summary' is not implemented "
+#             "or deprecated.")
+#      return create_response(501, {"message": msg})
 
 # def get_article_audio(article_id, language):
 #      """記事の音声を取得（現在は未使用）"""
 #      # get_episode で音声URLは取得済みのため、不要な可能性が高い。
-#      logger.info(f"Request for article audio (currently not implemented): {article_id}, lang: {language}")
+#      log_msg = (f"Request for article audio (not implemented): "
+#                 f"{article_id}, lang: {language}")
+#      logger.info(log_msg)
 #      # 必要に応じて実装 or 削除
-#      return create_response(501, {"message": "API endpoint '/articles/{id}/audio' is not implemented or deprecated."})
+#      msg = ("API endpoint '/articles/{id}/audio' is not implemented "
+#             "or deprecated.")
+#      return create_response(501, {"message": msg})
 
 # --- APIリクエストハンドラ ---
 
@@ -404,11 +415,9 @@ def handle_api_request(event, context):
     # デフォルト値を設定しつつ、安全に値を取得
     http_method = event.get('httpMethod', 'UNKNOWN')
     path = event.get('path', '/')
-    query_params = event.get('queryStringParameters') if event.get(
-        'queryStringParameters') else {}
+    query_params = event.get('queryStringParameters') or {}
     # API Gateway設定でパスパラメータを有効にする必要あり
-    path_params = event.get('pathParameters') if event.get(
-        'pathParameters') else {}
+    path_params = event.get('pathParameters') or {}
 
     logger.info(f"Handling request: {http_method} {path}")
     logger.debug(f"Query Parameters: {query_params}")
@@ -441,25 +450,30 @@ def handle_api_request(event, context):
         except ValueError:
             logger.warning("Invalid query parameter for page or limit: "
                            f"{query_params}")
-            return create_response(400,
-                                   {'error': 'Invalid page or limit parameter. '
-                                             'They must be integers.'})
+            error_msg = ('Invalid page or limit parameter. '
+                         'They must be integers.')
+            return create_response(400, {'error': error_msg})
 
     # GET /episodes/{episode_id} - 特定エピソード詳細
     # episode_id をパスパラメータから取得 (API Gateway の設定が必要)
+    # パスマッチングを修正 (path_params を使用)
     if http_method == 'GET' and path.startswith('/episodes/') and 'episode_id' in path_params:
         episode_id = path_params['episode_id']
         # episode_id の簡単なバリデーション（例: 空でないか）
         if not episode_id:
-            logger.warning(
-                f"Invalid episode_id in path parameters: {path_params}")
-            return create_response(400, {'error': 'Invalid episode ID in path.'})
+            logger.warning("Invalid episode_id in path parameters: "
+                           f"{path_params}")
+            error_response = {'error': 'Invalid episode ID in path.'}
+            return create_response(400, error_response)
 
         # # オプション: より厳密な形式チェック (例: YYYY-MM-DD)
         # import re
         # if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', episode_id):
         #     logger.warning(f"Invalid episode_id format: {episode_id}")
-        #     return create_response(400, {'error': 'Invalid episode ID format. Expected YYYY-MM-DD.'})
+        #     error_response = {
+        #         'error': 'Invalid episode ID format. Expected YYYY-MM-DD.'
+        #     }
+        #     return create_response(400, error_response)
 
         logger.info(f"Routing to get_episode (episode_id={episode_id})")
         return get_episode(episode_id)
@@ -470,16 +484,20 @@ def handle_api_request(event, context):
     #     if article_id_match:
     #         article_id = article_id_match.group(1)
     #         language = query_params.get('lang', 'ja')
-
+    #
     #         if path.endswith('/summary'):
-    #             logger.info(f"Routing to get_article_summary (id={article_id}, lang={language})")
+    #             log_msg = (f"Routing to get_article_summary (id={article_id}, "
+    #                        f"lang={language})")
+    #             logger.info(log_msg)
     #             # return get_article_summary(article_id, language)
     #             return create_response(501, {"message": "Not Implemented"})
     #         elif path.endswith('/audio'):
-    #             logger.info(f"Routing to get_article_audio (id={article_id}, lang={language})")
+    #             log_msg = (f"Routing to get_article_audio (id={article_id}, "
+    #                        f"lang={language})")
+    #             logger.info(log_msg)
     #             # return get_article_audio(article_id, language)
     #             return create_response(501, {"message": "Not Implemented"})
-
+    #
     # --- マッチしない場合 ---
     logger.warning(f"Unsupported route or method: {http_method} {path}")
     return create_response(404, {'error': 'Not Found'})
