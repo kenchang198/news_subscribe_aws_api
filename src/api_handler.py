@@ -1,10 +1,8 @@
 import json
-import os
 import logging
 import boto3
-import re
 from botocore.config import Config
-from src.config import S3_BUCKET_NAME, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+from src.config import S3_BUCKET_NAME, AWS_REGION
 
 # ロギング設定
 logging.basicConfig(
@@ -16,79 +14,75 @@ logger = logging.getLogger(__name__)
 # S3クライアント - IAMロールを使用
 s3_client = boto3.client(
     's3',
-    config=Config(signature_version='s3v4')
+    config=Config(signature_version='s3v4')  # 署名バージョン4を指定
 )
 
 # CORS用のレスポンスヘッダー
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',  # 本番環境では実際のドメインに制限
-    'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-    'Access-Control-Allow-Methods': 'GET,OPTIONS'
+    # ヘッダー名を複数行に分割
+    'Access-Control-Allow-Headers': (
+        'Content-Type,X-Amz-Date,Authorization,'
+        'X-Api-Key,X-Amz-Security-Token'
+    ),
+    'Access-Control-Allow-Methods': 'GET,OPTIONS'  # OPTIONSメソッドも許可
 }
 
 
 def create_response(status_code, body):
     """
-    レスポンスを生成する
+    API Gateway Proxy統合レスポンスを生成する
     """
     return {
         'statusCode': status_code,
         'headers': CORS_HEADERS,
-        'body': json.dumps(body, ensure_ascii=False)
+        'body': json.dumps(body, ensure_ascii=False)  # 日本語文字化け防止
     }
 
 
 def get_s3_path_from_url(url, bucket_name):
     """
-    S3のURLからオブジェクトキーを抽出する
-    
-    Args:
-        url (str): S3のURL
-        bucket_name (str): S3バケット名
-        
-    Returns:
-        str: オブジェクトキー
+    S3のURLからオブジェクトキーを抽出する。複数のURL形式に対応。
     """
-    try:
-        # 標準的なAmazon S3のURL形式
-        standard_pattern = f"https://{bucket_name}.s3.amazonaws.com/"
-        if standard_pattern in url:
-            return url.split(standard_pattern)[1]
-        
-        # リージョン指定のURL形式
-        region_pattern = f"https://{bucket_name}.s3.ap-northeast-1.amazonaws.com/"
-        if region_pattern in url:
-            return url.split(region_pattern)[1]
-        
-        # もう一つのバリエーション
-        alt_pattern = f"https://s3.ap-northeast-1.amazonaws.com/{bucket_name}/"
-        if alt_pattern in url:
-            return url.split(alt_pattern)[1]
-        
-        # 新しいバリエーション
-        new_pattern = f"https://{bucket_name}.s3.{AWS_REGION}.amazonaws.com/"
-        if new_pattern in url:
-            return url.split(new_pattern)[1]
-        
-        logger.warning(f"認識できないS3のURL形式: {url}")
+    if not url:  # URLが空やNoneの場合はNoneを返す
         return None
+    try:
+        # Try different S3 URL patterns, including region-specific and path-style
+        patterns = [
+            f"https://{bucket_name}.s3.amazonaws.com/",
+            # リージョン指定のURL形式 (行分割)
+            f"https://{bucket_name}.s3.{AWS_REGION}.amazonaws.com/",
+            f"https://s3.{AWS_REGION}.amazonaws.com/{bucket_name}/"  # パス形式
+        ]
+        for pattern in patterns:
+            if url.startswith(pattern):
+                # パターンに続く部分がオブジェクトキー
+                return url[len(pattern):].split('?')[0]  # クエリパラメータを除去
+
+        # Assume path-style URL if no standard pattern matches
+        # and bucket name is in the path
+        # e.g., https://some.domain/bucket_name/path/to/object
+        if f"/{bucket_name}/" in url:
+            # バケット名の後からがオブジェクトキー
+            return url.split(f"/{bucket_name}/", 1)[1].split('?')[0]
+
+        logger.warning(f"Unrecognized S3 URL format or bucket mismatch: {url}")
+        # ここでNoneを返すか、エラーを発生させるかは要件次第
+        return None  # Return None if format is unknown
     except Exception as e:
-        logger.error(f"S3パス抽出エラー: {str(e)}")
+        logger.error(f"Error extracting S3 path from URL '{url}': {str(e)}")
         return None
 
 
 def generate_presigned_url(bucket_name, object_key, expiration=3600):
     """
-    S3オブジェクトへの署名付きURLを生成する
-    
-    Args:
-        bucket_name (str): S3バケット名
-        object_key (str): S3オブジェクトキー
-        expiration (int): URLの有効期限（秒）
-        
-    Returns:
-        str: 署名付きURL
+    S3オブジェクトへの署名付きURLを生成する。
+    オブジェクトキーがない場合はNoneを返す。
     """
+    if not object_key:
+        logger.warning("generate_presigned_url called with empty or None "
+                       "object_key")
+        return None  # オブジェクトキーが無効な場合はNoneを返す
     try:
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
@@ -96,319 +90,396 @@ def generate_presigned_url(bucket_name, object_key, expiration=3600):
                 'Bucket': bucket_name,
                 'Key': object_key
             },
-            ExpiresIn=expiration
+            ExpiresIn=expiration  # 有効期限（秒）
         )
+        # logger.debug(f"Generated presigned URL for {object_key}: {presigned_url}")
         return presigned_url
     except Exception as e:
-        logger.error(f"署名付きURL生成エラー: {str(e)}")
+        # エラー発生時はログ記録し、Noneを返す
+        logger.error(f"Error generating presigned URL for bucket "
+                     f"'{bucket_name}', key '{object_key}': {str(e)}")
         return None
 
 
 def get_episodes_list(page=1, limit=10):
     """
-    エピソード一覧を取得する
+    エピソード一覧を取得する（ページネーション対応）。
+    現状はエピソードの基本情報のみを返す。署名付きURLは含めない。
     """
+    # TODO: シームレス再生対応後のエピソードリストの形式を検討する必要がある。
+    #       例えば、各エピソードのイントロ音声URLや記事数を返すなど。
+    #       キャッシュ戦略も検討（例: ETag, Last-Modifiedヘッダー）
     try:
-        # S3からエピソードリストを取得
+        # S3からエピソードリストJSONを取得
         response = s3_client.get_object(
             Bucket=S3_BUCKET_NAME,
-            Key='data/episodes_list.json'
+            Key='data/episodes_list.json'  # エピソードリストのキーは固定と仮定
         )
 
-        episodes_list = json.loads(response['Body'].read().decode('utf-8'))
+        episodes_list_data = json.loads(
+            response['Body'].read().decode('utf-8'))
 
-        # ページネーション
-        total_episodes = len(episodes_list)
-        total_pages = (total_episodes + limit - 1) // limit  # 切り上げ
+        # 日付（例: 'episode_id' や 'created_at'）で降順ソート
+        # キーが存在しない場合のエラーを避けるため .get を使用
+        try:
+            episodes_list_data.sort(
+                key=lambda x: x.get('episode_id', '0000-00-00'), reverse=True
+            )
+        except Exception as sort_e:
+            logger.warning(f"Could not sort episodes_list.json: {sort_e}")
 
+        # ページネーション処理
+        total_episodes = len(episodes_list_data)
+        total_pages = (total_episodes + limit - 1) // limit  # ページ数計算（切り上げ）
+
+        # 1ベースのページ番号を0ベースのインデックスに変換
         start_idx = (page - 1) * limit
-        end_idx = min(start_idx + limit, total_episodes)
+        end_idx = min(start_idx + limit, total_episodes)  # スライス終端
 
-        paginated_episodes = episodes_list[start_idx:end_idx]
-        
-        # 各エピソードに署名付きURLを追加
-        for episode in paginated_episodes:
-            # 日本語音声のPresigned URL（既存URLがある場合は置き換え）
-            if 'japanese_audio_url' in episode and episode['japanese_audio_url']:
-                object_key = get_s3_path_from_url(episode['japanese_audio_url'], S3_BUCKET_NAME)
-                if object_key:
-                    episode['japanese_audio_url'] = generate_presigned_url(
-                        S3_BUCKET_NAME,
-                        object_key,
-                        expiration=3600  # 1時間有効
-                    )
-            # 古い方式との互換性
-            elif 'japanese_audio_path' in episode and episode['japanese_audio_path']:
-                episode['japanese_audio_url'] = generate_presigned_url(
-                    S3_BUCKET_NAME,
-                    episode['japanese_audio_path'],
-                    expiration=3600  # 1時間有効
-                )
-            
-            # 英語音声のPresigned URL（既存URLがある場合は置き換え）
-            if 'english_audio_url' in episode and episode['english_audio_url']:
-                object_key = get_s3_path_from_url(episode['english_audio_url'], S3_BUCKET_NAME)
-                if object_key:
-                    episode['english_audio_url'] = generate_presigned_url(
-                        S3_BUCKET_NAME,
-                        object_key,
-                        expiration=3600  # 1時間有効
-                    )
-            # 古い方式との互換性
-            elif 'english_audio_path' in episode and episode['english_audio_path']:
-                episode['english_audio_url'] = generate_presigned_url(
-                    S3_BUCKET_NAME,
-                    episode['english_audio_path'],
-                    expiration=3600  # 1時間有効
-                )
+        # 範囲外のページが指定された場合の考慮
+        if page < 1 or start_idx >= total_episodes:
+            paginated_episodes_data = []  # 空リストを返す
+            # ページ番号を範囲内に補正
+            page = max(1, min(page, total_pages)) if total_pages > 0 else 1
+        else:
+            paginated_episodes_data = episodes_list_data[start_idx:end_idx]
+
+        # レスポンスに含めるエピソード情報を整形
+        # 詳細情報は get_episode で取得するため、ここでは基本情報のみ
+        processed_episodes = []
+        for episode in paginated_episodes_data:
+            processed_episodes.append({
+                "episode_id": episode.get("episode_id"),
+                "title": episode.get("title"),
+                "created_at": episode.get("created_at"),
+                # 必要に応じてサムネイルURLや簡単な説明などを追加
+            })
 
         return create_response(200, {
-            'episodes': paginated_episodes,
+            'episodes': processed_episodes,
             'totalPages': total_pages,
-            'currentPage': page,
+            'currentPage': page,  # 補正されたページ番号
             'totalEpisodes': total_episodes
         })
 
+    except s3_client.exceptions.NoSuchKey:
+        logger.error("episodes_list.json not found in S3.")
+        # エピソードリストがない場合は空のリストを返すか、エラーにするか選択
+        return create_response(200, {
+            'episodes': [], 'totalPages': 0, 'currentPage': 1, 'totalEpisodes': 0
+        })
     except Exception as e:
-        logger.error(f"エピソードリスト取得エラー: {str(e)}")
-        return create_response(500, {'error': 'エピソードリストの取得に失敗しました'})
+        logger.error(f"Error getting episode list: {str(e)}", exc_info=True)
+        return create_response(500, {'error': 'Failed to retrieve episode list'})
 
 
 def get_episode(episode_id):
     """
-    特定のエピソードを取得する
+    特定のエピソードのメタデータと再生リスト（署名付きURL付き）を取得する
     """
     try:
-        # S3からエピソードデータを取得
+        # S3からエピソードデータJSONを取得
+        s3_key = f'data/episodes/episode_{episode_id}.json'
+        logger.info(f"Fetching episode data from S3 bucket "
+                    f"'{S3_BUCKET_NAME}' with key: {s3_key}")
         response = s3_client.get_object(
             Bucket=S3_BUCKET_NAME,
-            Key=f'data/episodes/episode_{episode_id}.json'
+            Key=s3_key
         )
 
         episode_data = json.loads(response['Body'].read().decode('utf-8'))
-        
-        # エピソード全体の音声ファイルに署名付きURLを追加
-        if 'japanese_audio_url' in episode_data and episode_data['japanese_audio_url']:
-            object_key = get_s3_path_from_url(episode_data['japanese_audio_url'], S3_BUCKET_NAME)
-            if object_key:
-                episode_data['japanese_audio_url'] = generate_presigned_url(
-                    S3_BUCKET_NAME,
-                    object_key,
-                    expiration=3600  # 1時間有効
-                )
-        # 古い方式との互換性
-        elif 'japanese_audio_path' in episode_data and episode_data['japanese_audio_path']:
-            episode_data['japanese_audio_url'] = generate_presigned_url(
-                S3_BUCKET_NAME,
-                episode_data['japanese_audio_path'],
-                expiration=3600  # 1時間有効
+        logger.info(f"Successfully loaded episode data for {episode_id}")
+
+        playlist = []  # 再生リスト
+        processed_articles = []  # 処理済み記事リスト（署名付きURL含む）
+
+        # --- プレイリストと記事情報の構築 ---
+
+        # 1. エピソードイントロ音声
+        # episode_dataから 'intro_audio_url' を取得、なければ空文字列
+        intro_audio_url = episode_data.get('intro_audio_url', '')
+        intro_audio_key = get_s3_path_from_url(intro_audio_url, S3_BUCKET_NAME)
+        intro_presigned_url = generate_presigned_url(
+            S3_BUCKET_NAME, intro_audio_key
+        )
+        if intro_presigned_url:
+            playlist.append({
+                "type": "intro",
+                "audio_url": intro_presigned_url
+            })
+            logger.debug(f"Added intro audio to playlist for {episode_id}")
+        else:
+            # イントロ音声がない、またはURL生成に失敗した場合のログ
+            logger.warning(
+                f"Intro audio URL missing, invalid, or presigning failed "
+                f"for episode {episode_id}. URL: '{intro_audio_url}', "
+                f"Key: '{intro_audio_key}'")
+
+        # 2. 記事関連音声 (イントロ、本体、トランジション)
+        articles = episode_data.get('articles', [])  # 記事リスト取得、なければ空リスト
+        num_articles = len(articles)
+        logger.info(
+            f"Processing {num_articles} articles for episode {episode_id}")
+
+        # トランジション音声URLのリストを取得 (存在しない場合を考慮)
+        transition_urls = episode_data.get('transition_audio_urls', [])
+
+        for i, article in enumerate(articles):
+            article_id = article.get(
+                'id', f'unknown_article_{i+1}')  # IDがなければ仮のID
+            logger.info(
+                f"Processing article {i+1}/{num_articles} (ID: {article_id})")
+
+            # 2a. 記事イントロ音声
+            article_intro_url = article.get('intro_audio_url', '')
+            article_intro_key = get_s3_path_from_url(
+                article_intro_url, S3_BUCKET_NAME
             )
-        
-        if 'english_audio_url' in episode_data and episode_data['english_audio_url']:
-            object_key = get_s3_path_from_url(episode_data['english_audio_url'], S3_BUCKET_NAME)
-            if object_key:
-                episode_data['english_audio_url'] = generate_presigned_url(
-                    S3_BUCKET_NAME,
-                    object_key,
-                    expiration=3600  # 1時間有効
-                )
-        # 古い方式との互換性
-        elif 'english_audio_path' in episode_data and episode_data['english_audio_path']:
-            episode_data['english_audio_url'] = generate_presigned_url(
-                S3_BUCKET_NAME,
-                episode_data['english_audio_path'],
-                expiration=3600  # 1時間有効
+            article_intro_presigned_url = generate_presigned_url(
+                S3_BUCKET_NAME, article_intro_key
             )
-        
-        # 各記事の音声ファイルにも署名付きURLを追加
-        if 'articles' in episode_data:
-            for article in episode_data['articles']:
-                # 日本語音声
-                if 'japanese_audio_url' in article and article['japanese_audio_url']:
-                    object_key = get_s3_path_from_url(article['japanese_audio_url'], S3_BUCKET_NAME)
-                    if object_key:
-                        article['japanese_audio_url'] = generate_presigned_url(
-                            S3_BUCKET_NAME,
-                            object_key,
-                            expiration=3600  # 1時間有効
-                        )
-                # 古い方式との互換性
-                elif 'japanese_audio_path' in article and article['japanese_audio_path']:
-                    article['japanese_audio_url'] = generate_presigned_url(
-                        S3_BUCKET_NAME,
-                        article['japanese_audio_path'],
-                        expiration=3600  # 1時間有効
+            if article_intro_presigned_url:
+                playlist.append({
+                    "type": "article_intro",
+                    "article_id": article_id,
+                    "audio_url": article_intro_presigned_url
+                })
+                logger.debug(
+                    f"Added article intro audio to playlist for "
+                    f"article {article_id}")
+            else:
+                logger.warning(
+                    f"Article intro audio URL missing, invalid, or "
+                    f"presigning failed for article {article_id}. URL: "
+                    f"'{article_intro_url}', Key: '{article_intro_key}'")
+
+            # 2b. 記事本体音声
+            article_main_url = article.get(
+                'audio_url', '')  # 'audio_url' が本体音声と仮定
+            article_main_key = get_s3_path_from_url(
+                article_main_url, S3_BUCKET_NAME
+            )
+            article_main_presigned_url = generate_presigned_url(
+                S3_BUCKET_NAME, article_main_key
+            )
+            if article_main_presigned_url:
+                playlist.append({
+                    "type": "article",
+                    "article_id": article_id,
+                    "audio_url": article_main_presigned_url
+                })
+                logger.debug(
+                    f"Added article main audio to playlist for "
+                    f"article {article_id}")
+            else:
+                logger.warning(
+                    f"Article main audio URL missing, invalid, or "
+                    f"presigning failed for article {article_id}. URL: "
+                    f"'{article_main_url}', Key: '{article_main_key}'")
+
+            # 2c. トランジション音声 (次の記事がある場合のみ)
+            if i < num_articles - 1:
+                # transition_urls リストから対応するURLを取得
+                if i < len(transition_urls):
+                    transition_url = transition_urls[i]
+                    transition_key = get_s3_path_from_url(
+                        transition_url, S3_BUCKET_NAME
                     )
-                
-                # 英語音声
-                if 'english_audio_url' in article and article['english_audio_url']:
-                    object_key = get_s3_path_from_url(article['english_audio_url'], S3_BUCKET_NAME)
-                    if object_key:
-                        article['english_audio_url'] = generate_presigned_url(
-                            S3_BUCKET_NAME,
-                            object_key,
-                            expiration=3600  # 1時間有効
-                        )
-                # 古い方式との互換性
-                elif 'english_audio_path' in article and article['english_audio_path']:
-                    article['english_audio_url'] = generate_presigned_url(
-                        S3_BUCKET_NAME,
-                        article['english_audio_path'],
-                        expiration=3600  # 1時間有効
+                    transition_presigned_url = generate_presigned_url(
+                        S3_BUCKET_NAME, transition_key
                     )
-
-        return create_response(200, episode_data)
-
-    except Exception as e:
-        logger.error(f"エピソード取得エラー: {str(e)}")
-        return create_response(404, {'error': 'エピソードが見つかりません'})
-
-
-def get_article_summary(article_id, language):
-    """
-    記事の要約を取得する
-    """
-    try:
-        # article_idからepisode_idを抽出する正規表現
-        # 例: article_20230101_001 から 20230101 を抽出
-        match = re.search(r'article_(\d+)_', article_id)
-        if not match:
-            return create_response(400, {'error': '不正なarticle_idです'})
-
-        episode_id = match.group(1)
-
-        # S3からエピソードデータを取得
-        response = s3_client.get_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=f'data/episodes/episode_{episode_id}.json'
-        )
-
-        episode_data = json.loads(response['Body'].read().decode('utf-8'))
-
-        # 該当記事を検索
-        for article in episode_data['articles']:
-            if article['id'] == article_id:
-                # 言語に応じた要約を返す
-                if language == 'en':
-                    return create_response(200, {'summary': article['english_summary']})
-                else:
-                    return create_response(200, {'summary': article['japanese_summary']})
-
-        return create_response(404, {'error': '記事が見つかりません'})
-
-    except Exception as e:
-        logger.error(f"記事要約取得エラー: {str(e)}")
-        return create_response(500, {'error': '記事要約の取得に失敗しました'})
-
-
-def get_article_audio(article_id, language):
-    """
-    記事の音声URLを取得する（署名付きURLを生成）
-    """
-    try:
-        # article_idからepisode_idを抽出する正規表現
-        match = re.search(r'article_(\d+)_', article_id)
-        if not match:
-            return create_response(400, {'error': '不正なarticle_idです'})
-
-        episode_id = match.group(1)
-
-        # S3からエピソードデータを取得
-        response = s3_client.get_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=f'data/episodes/episode_{episode_id}.json'
-        )
-
-        episode_data = json.loads(response['Body'].read().decode('utf-8'))
-
-        # 該当記事を検索
-        for article in episode_data['articles']:
-            if article['id'] == article_id:
-                # 言語に応じた音声の署名付きURLを生成して返す
-                if language == 'en':
-                    if 'english_audio_url' in article and article['english_audio_url']:
-                        object_key = get_s3_path_from_url(article['english_audio_url'], S3_BUCKET_NAME)
-                        if object_key:
-                            presigned_url = generate_presigned_url(
-                                S3_BUCKET_NAME,
-                                object_key,
-                                expiration=3600  # 1時間有効
-                            )
-                            return create_response(200, {'audioUrl': presigned_url})
-                    # 古い方式との互換性
-                    elif 'english_audio_path' in article and article['english_audio_path']:
-                        presigned_url = generate_presigned_url(
-                            S3_BUCKET_NAME,
-                            article['english_audio_path'],
-                            expiration=3600  # 1時間有効
-                        )
-                        return create_response(200, {'audioUrl': presigned_url})
+                    if transition_presigned_url:
+                        playlist.append({
+                            "type": "transition",
+                            # "from_article_id": article_id, # 必要なら追加
+                            # "to_article_id": articles[i+1].get('id'), # 必要なら追加
+                            "audio_url": transition_presigned_url
+                        })
+                        logger.debug(
+                            f"Added transition audio to playlist after "
+                            f"article {article_id}")
                     else:
-                        return create_response(404, {'error': '英語音声ファイルが見つかりません'})
+                        logger.warning(
+                            f"Transition audio URL missing, invalid, or "
+                            f"presigning failed after article {article_id}. "
+                            f"URL: '{transition_url}', Key: '{transition_key}'")
                 else:
-                    if 'japanese_audio_url' in article and article['japanese_audio_url']:
-                        object_key = get_s3_path_from_url(article['japanese_audio_url'], S3_BUCKET_NAME)
-                        if object_key:
-                            presigned_url = generate_presigned_url(
-                                S3_BUCKET_NAME,
-                                object_key,
-                                expiration=3600  # 1時間有効
-                            )
-                            return create_response(200, {'audioUrl': presigned_url})
-                    # 古い方式との互換性
-                    elif 'japanese_audio_path' in article and article['japanese_audio_path']:
-                        presigned_url = generate_presigned_url(
-                            S3_BUCKET_NAME,
-                            article['japanese_audio_path'],
-                            expiration=3600  # 1時間有効
-                        )
-                        return create_response(200, {'audioUrl': presigned_url})
-                    else:
-                        return create_response(404, {'error': '日本語音声ファイルが見つかりません'})
+                    # トランジションURLがリストに足りない場合
+                    logger.warning(
+                        f"Missing transition audio URL in 'transition_audio_urls' "
+                        f"list after article {article_id} (index {i})")
 
-        return create_response(404, {'error': '記事が見つかりません'})
+            # 処理済み記事リストに追加（署名付きURLを含む）
+            processed_articles.append({
+                "id": article_id,
+                "title": article.get('title'),
+                "summary": article.get('summary'),
+                "audio_url": article_main_presigned_url,  # 署名付きURL（本体）
+                # 署名付きURL（イントロ）
+                "intro_audio_url": article_intro_presigned_url,
+                "duration": article.get('duration')  # duration は元のデータから取得
+            })
 
+        # 3. エピソードアウトロ音声
+        outro_audio_url = episode_data.get('outro_audio_url', '')
+        outro_audio_key = get_s3_path_from_url(outro_audio_url, S3_BUCKET_NAME)
+        outro_presigned_url = generate_presigned_url(
+            S3_BUCKET_NAME, outro_audio_key
+        )
+        if outro_presigned_url:
+            playlist.append({
+                "type": "outro",
+                "audio_url": outro_presigned_url
+            })
+            logger.debug(f"Added outro audio to playlist for {episode_id}")
+        else:
+            logger.warning(
+                f"Outro audio URL missing, invalid, or presigning failed "
+                f"for episode {episode_id}. URL: '{outro_audio_url}', "
+                f"Key: '{outro_audio_key}'")
+
+        # --- レスポンスデータの構築 ---
+        response_body = {
+            "episode_id": episode_id,  # リクエストされたID
+            # タイトル取得、なければデフォルト値
+            "title": episode_data.get('title', f"Episode {episode_id}"),
+            "created_at": episode_data.get('created_at'),  # 作成日時
+            "intro_audio_url": intro_presigned_url,  # 署名付きURL（イントロ）
+            "outro_audio_url": outro_presigned_url,  # 署名付きURL（アウトロ）
+            "playlist": playlist,  # 完成したプレイリスト
+            "articles": processed_articles  # 署名付きURLを含む記事リスト
+        }
+
+        logger.info(
+            f"Successfully generated response for episode {episode_id}")
+        return create_response(200, response_body)
+
+    # --- エラーハンドリング ---
+    except s3_client.exceptions.NoSuchKey:
+        # 指定されたエピソードIDのJSONファイルが存在しない場合
+        logger.warning(
+            f"Episode data not found in S3 for episode_id: {episode_id} "
+            f"(Key: {s3_key})")
+        return create_response(404, {'error': f'Episode {episode_id} not found'})
+    except json.JSONDecodeError as json_e:
+        # JSONファイルのパースに失敗した場合
+        logger.error(
+            f"Failed to decode JSON for episode {episode_id} from key "
+            f"{s3_key}: {json_e}")
+        return create_response(500,
+                               {'error': f'Invalid data format for episode {episode_id}'})
     except Exception as e:
-        logger.error(f"記事音声URL取得エラー: {str(e)}")
-        return create_response(500, {'error': '記事音声URLの取得に失敗しました'})
+        # その他の予期せぬエラー
+        # スタックトレースもログに出力
+        logger.error(
+            f"Unexpected error getting episode {episode_id}: {str(e)}",
+            exc_info=True)
+        return create_response(500,
+                               {'error': f'Failed to retrieve episode details for {episode_id}'})
+
+# --- 以下の関数は現状維持または削除検討 ---
+
+# def get_article_summary(article_id, language):
+#      """記事の要約を取得（現在は未使用）"""
+#      # このAPIエンドポイントがまだ必要か確認。
+#      # get_episode で記事情報は取得済みのため、不要な可能性が高い。
+#      logger.info(f"Request for article summary (currently not implemented): {article_id}, lang: {language}")
+#      # 必要に応じて実装 or 削除
+#      return create_response(501, {"message": "API endpoint '/articles/{id}/summary' is not implemented or deprecated."})
+
+# def get_article_audio(article_id, language):
+#      """記事の音声を取得（現在は未使用）"""
+#      # get_episode で音声URLは取得済みのため、不要な可能性が高い。
+#      logger.info(f"Request for article audio (currently not implemented): {article_id}, lang: {language}")
+#      # 必要に応じて実装 or 削除
+#      return create_response(501, {"message": "API endpoint '/articles/{id}/audio' is not implemented or deprecated."})
+
+# --- APIリクエストハンドラ ---
 
 
 def handle_api_request(event, context):
     """
-    APIリクエストを処理する
+    API Gatewayからのリクエストを処理し、適切なハンドラー関数を呼び出す
     """
-    # プレフライトリクエスト（OPTIONS）の処理
-    if event['httpMethod'] == 'OPTIONS':
-        return create_response(200, {})
+    # デフォルト値を設定しつつ、安全に値を取得
+    http_method = event.get('httpMethod', 'UNKNOWN')
+    path = event.get('path', '/')
+    query_params = event.get('queryStringParameters') if event.get(
+        'queryStringParameters') else {}
+    # API Gateway設定でパスパラメータを有効にする必要あり
+    path_params = event.get('pathParameters') if event.get(
+        'pathParameters') else {}
 
-    # パスとクエリパラメータの取得
-    path = event['path']
-    query_params = event.get('queryStringParameters', {}) or {}
+    logger.info(f"Handling request: {http_method} {path}")
+    logger.debug(f"Query Parameters: {query_params}")
+    logger.debug(f"Path Parameters: {path_params}")  # パスパラメータもログ出力
 
-    # エンドポイントに応じた処理
-    if path == '/api/episodes':
-        # エピソード一覧の取得
-        page = int(query_params.get('page', 1))
-        limit = int(query_params.get('limit', 10))
-        return get_episodes_list(page, limit)
+    # --- ルーティング ---
 
-    elif path.startswith('/api/episodes/'):
-        # 特定のエピソードの取得
-        episode_id = path.split('/')[-1]
+    # OPTIONSメソッドへの対応（CORSプリフライトリクエスト用）
+    if http_method == 'OPTIONS':
+        logger.info("Responding to OPTIONS request for CORS preflight")
+        # 必要なヘッダーを含めて200 OKを返す
+        return {
+            'statusCode': 200,
+            'headers': CORS_HEADERS,
+            'body': ''  # ボディは空でよい
+        }
+
+    # GET /episodes - エピソード一覧
+    if http_method == 'GET' and path == '/episodes':
+        try:
+            # クエリパラメータ 'page' と 'limit' を整数に変換、デフォルト値とバリデーション
+            page = int(query_params.get('page', '1'))
+            limit = int(query_params.get('limit', '10'))
+            # 不正な値が指定された場合、デフォルト値に戻す
+            page = max(1, page)
+            limit = max(1, min(limit, 100))  # limitの上限を100に設定する例
+            logger.info(
+                f"Routing to get_episodes_list (page={page}, limit={limit})")
+            return get_episodes_list(page, limit)
+        except ValueError:
+            logger.warning("Invalid query parameter for page or limit: "
+                           f"{query_params}")
+            return create_response(400,
+                                   {'error': 'Invalid page or limit parameter. '
+                                             'They must be integers.'})
+
+    # GET /episodes/{episode_id} - 特定エピソード詳細
+    # episode_id をパスパラメータから取得 (API Gateway の設定が必要)
+    if http_method == 'GET' and path.startswith('/episodes/') and 'episode_id' in path_params:
+        episode_id = path_params['episode_id']
+        # episode_id の簡単なバリデーション（例: 空でないか）
+        if not episode_id:
+            logger.warning(
+                f"Invalid episode_id in path parameters: {path_params}")
+            return create_response(400, {'error': 'Invalid episode ID in path.'})
+
+        # # オプション: より厳密な形式チェック (例: YYYY-MM-DD)
+        # import re
+        # if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', episode_id):
+        #     logger.warning(f"Invalid episode_id format: {episode_id}")
+        #     return create_response(400, {'error': 'Invalid episode ID format. Expected YYYY-MM-DD.'})
+
+        logger.info(f"Routing to get_episode (episode_id={episode_id})")
         return get_episode(episode_id)
 
-    elif path.startswith('/api/articles/') and path.endswith('/summary'):
-        # 記事の要約の取得
-        article_id = path.split('/')[-2]
-        language = query_params.get('language', 'ja')
-        return get_article_summary(article_id, language)
+    # --- 記事単体API（コメントアウト）---
+    # if http_method == 'GET' and path.startswith('/articles/'):
+    #     article_id_match = re.search(r'/articles/([^/]+)', path)
+    #     if article_id_match:
+    #         article_id = article_id_match.group(1)
+    #         language = query_params.get('lang', 'ja')
 
-    elif path.startswith('/api/articles/') and path.endswith('/audio'):
-        # 記事の音声URLの取得
-        article_id = path.split('/')[-2]
-        language = query_params.get('language', 'ja')
-        return get_article_audio(article_id, language)
+    #         if path.endswith('/summary'):
+    #             logger.info(f"Routing to get_article_summary (id={article_id}, lang={language})")
+    #             # return get_article_summary(article_id, language)
+    #             return create_response(501, {"message": "Not Implemented"})
+    #         elif path.endswith('/audio'):
+    #             logger.info(f"Routing to get_article_audio (id={article_id}, lang={language})")
+    #             # return get_article_audio(article_id, language)
+    #             return create_response(501, {"message": "Not Implemented"})
 
-    else:
-        # 未対応のエンドポイント
-        return create_response(404, {'error': 'エンドポイントが見つかりません'})
+    # --- マッチしない場合 ---
+    logger.warning(f"Unsupported route or method: {http_method} {path}")
+    return create_response(404, {'error': 'Not Found'})
