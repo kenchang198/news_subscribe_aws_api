@@ -414,6 +414,7 @@ def handle_api_request(event, context):
     """
     # デフォルト値を設定しつつ、安全に値を取得
     http_method = event.get('httpMethod', 'UNKNOWN')
+    # API Gatewayからのパスには /api が含まれることを想定
     path = event.get('path', '/')
     query_params = event.get('queryStringParameters') or {}
     # API Gateway設定でパスパラメータを有効にする必要あり
@@ -423,7 +424,7 @@ def handle_api_request(event, context):
     logger.debug(f"Query Parameters: {query_params}")
     logger.debug(f"Path Parameters: {path_params}")  # パスパラメータもログ出力
 
-    # --- ルーティング ---
+    # --- ルーティング (パスを /api プレフィックス付きでチェック) ---
 
     # OPTIONSメソッドへの対応（CORSプリフライトリクエスト用）
     if http_method == 'OPTIONS':
@@ -435,8 +436,8 @@ def handle_api_request(event, context):
             'body': ''  # ボディは空でよい
         }
 
-    # GET /episodes - エピソード一覧
-    if http_method == 'GET' and path == '/episodes':
+    # GET /api/episodes - エピソード一覧
+    if http_method == 'GET' and path == '/api/episodes':  # パスを修正
         try:
             # クエリパラメータ 'page' と 'limit' を整数に変換、デフォルト値とバリデーション
             page = int(query_params.get('page', '1'))
@@ -454,10 +455,9 @@ def handle_api_request(event, context):
                          'They must be integers.')
             return create_response(400, {'error': error_msg})
 
-    # GET /episodes/{episode_id} - 特定エピソード詳細
-    # episode_id をパスパラメータから取得 (API Gateway の設定が必要)
-    # パスマッチングを修正 (path_params を使用)
-    if http_method == 'GET' and path.startswith('/episodes/') and 'episode_id' in path_params:
+    # GET /api/episodes/{episode_id} - 特定エピソード詳細
+    # パスマッチングを修正 (path_params を使用, パスプレフィックスも修正)
+    if http_method == 'GET' and path.startswith('/api/episodes/') and 'episode_id' in path_params:
         episode_id = path_params['episode_id']
         # episode_id の簡単なバリデーション（例: 空でないか）
         if not episode_id:
@@ -478,25 +478,9 @@ def handle_api_request(event, context):
         logger.info(f"Routing to get_episode (episode_id={episode_id})")
         return get_episode(episode_id)
 
-    # --- 記事単体API（コメントアウト）---
-    # if http_method == 'GET' and path.startswith('/articles/'):
-    #     article_id_match = re.search(r'/articles/([^/]+)', path)
-    #     if article_id_match:
-    #         article_id = article_id_match.group(1)
-    #         language = query_params.get('lang', 'ja')
-    #
-    #         if path.endswith('/summary'):
-    #             log_msg = (f"Routing to get_article_summary (id={article_id}, "
-    #                        f"lang={language})")
-    #             logger.info(log_msg)
-    #             # return get_article_summary(article_id, language)
-    #             return create_response(501, {"message": "Not Implemented"})
-    #         elif path.endswith('/audio'):
-    #             log_msg = (f"Routing to get_article_audio (id={article_id}, "
-    #                        f"lang={language})")
-    #             logger.info(log_msg)
-    #             # return get_article_audio(article_id, language)
-    #             return create_response(501, {"message": "Not Implemented"})
+    # --- 記事単体API（コメントアウト、必要ならパスも /api/articles/... に修正）---
+    # if http_method == 'GET' and path.startswith('/api/articles/'): # パス修正
+    #     # ... (中略) ...
     #
     # --- マッチしない場合 ---
     logger.warning(f"Unsupported route or method: {http_method} {path}")
