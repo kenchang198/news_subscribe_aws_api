@@ -5,9 +5,11 @@ IS_LAMBDA = os.environ.get('AWS_EXECUTION_ENV', '').startswith('AWS_Lambda_')
 
 # ローカル開発用設定
 LOCAL_HOST = '127.0.0.1'
-LOCAL_PORT = 5000
-LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'local_data')
-LOCAL_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'local_audio')
+LOCAL_PORT = 5001
+LOCAL_DATA_DIR = os.path.join(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))), 'local_data')
+LOCAL_AUDIO_DIR = os.path.join(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))), 'local_audio')
 
 # AWS環境用設定
 S3_BUCKET = os.environ.get('S3_BUCKET', 'news-audio-content')
@@ -23,12 +25,14 @@ CORS_HEADERS = {
 }
 
 # ファイルパス設定（環境によって切り替え）
+
+
 def get_metadata_path(episode_id=None):
     """エピソードメタデータのパスを取得
-    
+
     Args:
         episode_id: エピソードID（指定がなければ全エピソード）
-    
+
     Returns:
         str: ファイルパスまたはS3キー
     """
@@ -39,10 +43,12 @@ def get_metadata_path(episode_id=None):
     else:
         if episode_id:
             # 既存のファイル構造に合わせて探索する
-            episode_path = os.path.join(LOCAL_DATA_DIR, "episodes", f"episode_{episode_id}.json")
-            metadata_path = os.path.join(LOCAL_DATA_DIR, "metadata", f"metadata_{episode_id}.json")
+            episode_path = os.path.join(
+                LOCAL_DATA_DIR, "episodes", f"episode_{episode_id}.json")
+            metadata_path = os.path.join(
+                LOCAL_DATA_DIR, "metadata", f"metadata_{episode_id}.json")
             standard_path = os.path.join(LOCAL_DATA_DIR, f"{episode_id}.json")
-            
+
             # いずれかのファイルが存在すればそれを返す
             if os.path.exists(episode_path):
                 return episode_path
@@ -52,9 +58,10 @@ def get_metadata_path(episode_id=None):
                 return standard_path
         return LOCAL_DATA_DIR
 
+
 def get_episodes_list_path():
     """エピソード一覧ファイルのパスを取得
-    
+
     Returns:
         str: ファイルパスまたはS3キー
     """
@@ -65,12 +72,13 @@ def get_episodes_list_path():
         # ローカル環境ではローカルのepisodes_list.jsonを使用
         return os.path.join(LOCAL_DATA_DIR, "episodes_list.json")
 
+
 def build_audio_url(audio_key):
     """音声ファイルのURLを構築
-    
+
     Args:
         audio_key: 音声ファイルのキーまたはパス
-    
+
     Returns:
         str: 音声ファイルのURL
     """
