@@ -13,8 +13,10 @@ LOCAL_AUDIO_DIR = os.path.join(os.path.dirname(
 
 # AWS環境用設定
 S3_BUCKET = os.environ.get('S3_BUCKET', 'news-audio-content')
-S3_PREFIX = os.environ.get('S3_PREFIX', 'audio/')
-S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'metadata/')
+# 音声ファイルは data/audio/...
+S3_PREFIX = os.environ.get('S3_PREFIX', 'data/audio/')
+# メタデータは data/metadata/...
+S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'data/metadata/')
 API_STAGE = os.environ.get('API_STAGE', 'dev')
 
 # 共通設定
@@ -38,8 +40,9 @@ def get_metadata_path(episode_id=None):
     """
     if IS_LAMBDA:
         if episode_id:
-            return f"{S3_METADATA_PREFIX}{episode_id}.json"
-        return S3_METADATA_PREFIX
+            # S3: data/episodes/episode_<episode_id>.json
+            return f"data/episodes/episode_{episode_id}.json"
+        return "data/episodes/"  # ディレクトリプレフィックス
     else:
         if episode_id:
             # 既存のファイル構造に合わせて探索する
@@ -66,8 +69,8 @@ def get_episodes_list_path():
         str: ファイルパスまたはS3キー
     """
     if IS_LAMBDA:
-        # AWS環境では、S3に保存されたepisodes_list.jsonを使用
-        return f"{S3_METADATA_PREFIX}episodes_list.json"
+        # AWS環境では data ディレクトリ配下を想定
+        return "data/episodes_list.json"
     else:
         # ローカル環境ではローカルのepisodes_list.jsonを使用
         return os.path.join(LOCAL_DATA_DIR, "episodes_list.json")
@@ -83,7 +86,8 @@ def build_audio_url(audio_key):
         str: 音声ファイルのURL
     """
     if IS_LAMBDA:
-        return f"https://{S3_BUCKET}.s3.amazonaws.com/{audio_key}"
+        base_url = f"https://{S3_BUCKET}.s3.amazonaws.com"
+        return f"{base_url}/{audio_key}"
     else:
         # ローカル開発環境ではホスト名とポートを使用
         return f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{os.path.basename(audio_key)}"

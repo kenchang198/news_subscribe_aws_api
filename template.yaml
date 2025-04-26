@@ -22,10 +22,20 @@ Parameters:
   
   S3BucketName:
     Type: String
-    Default: news-audio-content
+    Default: news-audio-files-kenchang198-dev
     Description: S3 bucket for audio files and metadata
 
+# ------------------------------------------------------------
+# Resources
+# ------------------------------------------------------------
+
 Resources:
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      EndpointConfiguration: REGIONAL
+
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -39,33 +49,22 @@ Resources:
           S3_METADATA_PREFIX: metadata/
           API_STAGE: !Ref Stage
       Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref S3BucketName
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+              Resource:
+                - !Sub "arn:aws:s3:::${S3BucketName}"
+                - !Sub "arn:aws:s3:::${S3BucketName}/*"
       Events:
-        ApiEvent:
+        ProxyApiEvent:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGatewayApi
             Path: /{proxy+}
             Method: ANY
-        RootApiEvent:
-          Type: Api
-          Properties:
-            Path: /
-            Method: ANY
-
-  S3Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Ref S3BucketName
-      CorsConfiguration:
-        CorsRules:
-          - AllowedHeaders:
-              - '*'
-            AllowedMethods:
-              - GET
-            AllowedOrigins:
-              - '*'
-            MaxAge: 3600
 
 Outputs:
   ApiFunction:
@@ -74,8 +73,8 @@ Outputs:
   
   ApiURL:
     Description: "API Gateway endpoint URL"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+    Value: !Sub "https://${ApiGatewayApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
   
   S3BucketName:
     Description: "S3 bucket for audio files"
-    Value: !Ref S3Bucket
+    Value: !Ref S3BucketName
