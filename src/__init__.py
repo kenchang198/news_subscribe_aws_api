@@ -1,1 +1,1 @@
-# APIプロジェクト初期化ファイル
+# news_subscribe_aws_api パッケージ

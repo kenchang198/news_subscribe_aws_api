@@ -1,41 +1,81 @@
 import os
 
-# Lambda環境かどうかを判定 (dotenvの前に判定)
-IS_LAMBDA = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
+# 環境設定
+IS_LAMBDA = os.environ.get('AWS_EXECUTION_ENV', '').startswith('AWS_Lambda_')
 
-# ローカル環境の場合のみ dotenv をインポートして .env を読み込む
-if not IS_LAMBDA:
-    try:
-        from dotenv import load_dotenv
-        # .envファイルが存在する場合のみ読み込む
-        dotenv_path = os.path.join(os.path.dirname(
-            __file__), '../.env')  # .env がプロジェクトルートにあると仮定
-        if os.path.exists(dotenv_path):
-            load_dotenv(dotenv_path=dotenv_path)
-            print("Loaded environment variables from .env")  # 確認用ログ
-        else:
-            # .env がなくてもエラーにはしない
-            pass
-    except ImportError:
-        # dotenv がインストールされていない場合もエラーにしない
-        pass
+# ローカル開発用設定
+LOCAL_HOST = '127.0.0.1'
+LOCAL_PORT = 5000
+LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'local_data')
+LOCAL_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'local_audio')
 
-# AWS 設定 (環境変数から取得、なければデフォルト値)
-AWS_REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
-# AWS認証情報はLambda実行ロールやEC2インスタンスプロファイル等から取得される想定
-# ローカル用に .env や環境変数で設定する場合のみ有効
-AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+# AWS環境用設定
+S3_BUCKET = os.environ.get('S3_BUCKET', 'news-audio-content')
+S3_PREFIX = os.environ.get('S3_PREFIX', 'audio/')
+S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'metadata/')
+API_STAGE = os.environ.get('API_STAGE', 'dev')
 
-# S3 設定
-S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
-if not S3_BUCKET_NAME:
-    # S3バケット名がない場合は警告（Lambda環境では必須）
+# 共通設定
+CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',  # 開発環境では全許可、本番環境では適切に制限する
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'OPTIONS,GET'
+}
+
+# ファイルパス設定（環境によって切り替え）
+def get_metadata_path(episode_id=None):
+    """エピソードメタデータのパスを取得
+    
+    Args:
+        episode_id: エピソードID（指定がなければ全エピソード）
+    
+    Returns:
+        str: ファイルパスまたはS3キー
+    """
     if IS_LAMBDA:
-        print("Warning: S3_BUCKET_NAME environment variable is not set.")
+        if episode_id:
+            return f"{S3_METADATA_PREFIX}{episode_id}.json"
+        return S3_METADATA_PREFIX
     else:
-        # ローカルではエラーにしない（他の方法で設定する可能性）
-        pass
+        if episode_id:
+            # 既存のファイル構造に合わせて探索する
+            episode_path = os.path.join(LOCAL_DATA_DIR, "episodes", f"episode_{episode_id}.json")
+            metadata_path = os.path.join(LOCAL_DATA_DIR, "metadata", f"metadata_{episode_id}.json")
+            standard_path = os.path.join(LOCAL_DATA_DIR, f"{episode_id}.json")
+            
+            # いずれかのファイルが存在すればそれを返す
+            if os.path.exists(episode_path):
+                return episode_path
+            elif os.path.exists(metadata_path):
+                return metadata_path
+            else:
+                return standard_path
+        return LOCAL_DATA_DIR
 
-# ロギング設定
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+def get_episodes_list_path():
+    """エピソード一覧ファイルのパスを取得
+    
+    Returns:
+        str: ファイルパスまたはS3キー
+    """
+    if IS_LAMBDA:
+        # AWS環境では、S3に保存されたepisodes_list.jsonを使用
+        return f"{S3_METADATA_PREFIX}episodes_list.json"
+    else:
+        # ローカル環境ではローカルのepisodes_list.jsonを使用
+        return os.path.join(LOCAL_DATA_DIR, "episodes_list.json")
+
+def build_audio_url(audio_key):
+    """音声ファイルのURLを構築
+    
+    Args:
+        audio_key: 音声ファイルのキーまたはパス
+    
+    Returns:
+        str: 音声ファイルのURL
+    """
+    if IS_LAMBDA:
+        return f"https://{S3_BUCKET}.s3.amazonaws.com/{audio_key}"
+    else:
+        # ローカル開発環境ではホスト名とポートを使用
+        return f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{os.path.basename(audio_key)}"

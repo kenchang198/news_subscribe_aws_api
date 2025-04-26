@@ -1,96 +1,81 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: News Subscribe App - API Function
+Description: API Service for News Audio Application
 
 Globals:
   Function:
-    Timeout: 30
+    Timeout: 10
     MemorySize: 128
-  Api:
-    Cors:
-      AllowMethods: "'GET,OPTIONS'"
-      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-      AllowOrigin: "'*'"
+    Runtime: python3.10
+    Architectures:
+      - x86_64
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment stage (environment)
+  
+  S3BucketName:
+    Type: String
+    Default: news-audio-content
+    Description: S3 bucket for audio files and metadata
 
 Resources:
-  # API用のLambda関数
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: ./
       Handler: lambda_function.lambda_handler
-      Runtime: python3.9
-      Architectures:
-        - x86_64
+      Description: API handler for News Audio Application
       Environment:
         Variables:
-          S3_BUCKET_NAME: !Ref S3BucketName
+          S3_BUCKET: !Ref S3BucketName
+          S3_PREFIX: audio/
+          S3_METADATA_PREFIX: metadata/
+          API_STAGE: !Ref Stage
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref S3BucketName
-        - Statement:
-            - Effect: Allow
-              Action:
-                - apigateway:*
-              Resource: "*"
       Events:
-        # エピソード一覧取得API
-        GetEpisodes:
+        ApiEvent:
           Type: Api
           Properties:
-            Path: /api/episodes
-            Method: GET
-            RestApiId: !Ref NewsApi
-        
-        # 特定のエピソード取得API
-        GetEpisode:
+            Path: /{proxy+}
+            Method: ANY
+        RootApiEvent:
           Type: Api
           Properties:
-            Path: /api/episodes/{episode_id}
-            Method: GET
-            RestApiId: !Ref NewsApi
-        
-        # 記事の要約取得API
-        GetArticleSummary:
-          Type: Api
-          Properties:
-            Path: /api/articles/{article_id}/summary
-            Method: GET
-            RestApiId: !Ref NewsApi
-        
-        # 記事の音声URL取得API
-        GetArticleAudio:
-          Type: Api
-          Properties:
-            Path: /api/articles/{article_id}/audio
-            Method: GET
-            RestApiId: !Ref NewsApi
+            Path: /
+            Method: ANY
 
-  # APIゲートウェイ
-  NewsApi:
-    Type: AWS::Serverless::Api
+  S3Bucket:
+    Type: AWS::S3::Bucket
     Properties:
-      StageName: v1
-      Cors:
-        AllowMethods: "'GET,OPTIONS'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-        AllowOrigin: "'*'"
-
-Parameters:
-  S3BucketName:
-    Type: String
-    Default: news-audio-files-kenchang198-dev
-    Description: Name of the S3 bucket for storing audio files
+      BucketName: !Ref S3BucketName
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
 
 Outputs:
   ApiFunction:
-    Description: API Lambda Function ARN
+    Description: "API Lambda Function ARN"
     Value: !GetAtt ApiFunction.Arn
   
-  NewsApiEndpoint:
-    Description: API Gateway Endpoint URL
-    Value: !Sub "https://${NewsApi}.execute-api.${AWS::Region}.amazonaws.com/v1/"
+  ApiURL:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
   
   S3BucketName:
-    Description: S3 bucket for audio files
-    Value: !Ref S3BucketName
+    Description: "S3 bucket for audio files"
+    Value: !Ref S3Bucket

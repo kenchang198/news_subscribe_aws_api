@@ -1,108 +1,99 @@
-# News Subscribe AWS API
-
-ITニュース記事の要約音声配信サイト用のAPI Lambdaプロジェクト
+# ITニュース記事の要約音声配信サイト - APIサービス
 
 ## 概要
 
-このプロジェクトは、ITニュースの最新記事を自動で要約し、音声合成（TTS）で配信するためのAPI部分を提供します。
+このプロジェクトは、ITニュース記事を要約して音声で配信するサービスのバックエンドAPIです。
+フロントエンドアプリケーションにエピソードのメタデータや音声ファイルへのアクセスを提供します。
 
-API Gatewayを通じて以下のエンドポイントを公開します：
+## ローカル開発環境のセットアップ
 
-- `/api/episodes` - エピソード一覧を取得
-- `/api/episodes/{episode_id}` - 特定のエピソードを取得
-- `/api/articles/{article_id}/summary` - 記事の要約を取得
-- `/api/articles/{article_id}/audio` - 記事の音声URLを取得
+### 前提条件
 
-## 開発環境のセットアップ
+- Python 3.8以上
+- pip（Pythonパッケージマネージャ）
 
-### 必要条件
+### インストール手順
 
-- Python 3.9以上
-- AWS CLI
-- AWS SAM CLI
-
-### 環境構築
-
-1. リポジトリをクローンする
-
-```bash
-git clone <repository-url>
-cd news_subscribe_aws_api
-```
-
-2. 仮想環境を作成してアクティベートする
-
-```bash
-python -m venv env
-source env/bin/activate  # macOS/Linux
-env\Scripts\activate     # Windows
-```
-
-3. 依存関係をインストールする
+1. 必要なパッケージのインストール:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. 環境変数を設定する
+2. ローカルサーバーの起動:
 
 ```bash
-cp .env.example .env
-# .envファイルを編集して適切な設定を行う
+python local_server.py
 ```
 
-## ローカル開発
+## 利用可能なエンドポイント
 
-ローカルのFlaskサーバーを使用して開発することができます：
+- `GET /api/episodes` - エピソード一覧の取得
+- `GET /api/episodes/<episode_id>` - 特定エピソードのメタデータ取得
+- `GET /audio/<filename>` - 音声ファイルの取得
+- `GET /api/health` - ヘルスチェック
 
-```bash
-python local_api_server.py
+## 設定
+
+ローカルサーバーを起動する前に、必要に応じて`local_server.py`の以下の設定を修正してください：
+
+- `LOCAL_NEWS_PATH` - メタデータJSONファイルの保存場所
+- `LOCAL_AUDIO_PATH` - 音声ファイルの保存場所
+- `BASE_URL` - 音声ファイルを提供するベースURL
+
+## APIレスポンス形式
+
+### エピソード一覧
+
+```json
+{
+  "episodes": [
+    {
+      "episode_id": "2025-04-17",
+      "title": "Tech News (2025-04-17)",
+      "created_at": "2025-04-17 21:00:00"
+    },
+    ...
+  ]
+}
 ```
 
-これにより、http://localhost:3001/ でAPIサーバーが起動します。
+### 特定エピソード
 
-## AWSへのデプロイ
-
-AWS SAMを使用してデプロイします：
-
-```bash
-# SAMビルド
-sam build
-
-# 初回デプロイ（対話式）
-sam deploy --guided
-
-# 2回目以降のデプロイ
-sam deploy
+```json
+{
+  "episode_id": "2025-04-17",
+  "title": "Tech News (2025-04-17)",
+  "created_at": "2025-04-17 21:00:00",
+  "intro_audio_url": "http://localhost:5000/audio/narration/2025-04-17_intro.mp3",
+  "outro_audio_url": "http://localhost:5000/audio/narration/2025-04-17_outro.mp3",
+  "playlist": [
+    {
+      "type": "intro",
+      "audio_url": "http://localhost:5000/audio/narration/2025-04-17_intro.mp3"
+    },
+    {
+      "type": "article_intro",
+      "article_id": "article1",
+      "audio_url": "http://localhost:5000/audio/narration/2025-04-17_intro_1.mp3"
+    },
+    {
+      "type": "article",
+      "article_id": "article1",
+      "audio_url": "http://localhost:5000/audio/2025-04-17_1.mp3"
+    },
+    ...
+  ],
+  "articles": [
+    {
+      "id": "article1",
+      "title": "記事1のタイトル",
+      "summary": "記事1の要約テキスト",
+      "audio_url": "http://localhost:5000/audio/2025-04-17_1.mp3",
+      "intro_audio_url": "http://localhost:5000/audio/narration/2025-04-17_intro_1.mp3",
+      "duration": 180
+    },
+    ...
+  ]
+}
 ```
-
-## APIエンドポイント
-
-### エピソード一覧を取得
-
-```
-GET /api/episodes?page=1&limit=10
-```
-
-### 特定のエピソードを取得
-
-```
-GET /api/episodes/{episode_id}
-```
-
-### 記事の要約を取得
-
-```
-GET /api/articles/{article_id}/summary?language=ja
-```
-
-### 記事の音声URLを取得
-
-```
-GET /api/articles/{article_id}/audio?language=ja
-```
-
-## フロントエンドとの連携
-
-このAPIは、Next.jsベースのフロントエンドアプリケーションと連携するように設計されています。フロントエンドは別リポジトリ（news-audio-frontend）にあります。
-# news_subscribe_aws_api

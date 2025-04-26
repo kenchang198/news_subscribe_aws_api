@@ -1,54 +1,20 @@
 import json
 import logging
-from src.api_handler import handle_api_request
+from src.api_handler import handle_request
 
-# ロギング設定
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 def lambda_handler(event, context):
-    """
-    APIリクエストを処理するLambda関数
-    """
-    logger.info(f"APIリクエスト受信: {json.dumps(event)}")
+    """AWS Lambda関数ハンドラー
     
-    try:
-        # APIリクエストの処理
-        return handle_api_request(event, context)
-    
-    except Exception as e:
-        logger.error(f"APIリクエスト処理中にエラー: {str(e)}", exc_info=True)
+    Args:
+        event: API Gatewayイベント
+        context: Lambda実行コンテキスト
         
-        # エラーレスポンス
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Access-Control-Allow-Origin': '*',
-                'Content-Type': 'application/json'
-            },
-            'body': json.dumps({
-                'error': 'Internal Server Error',
-                'message': str(e)
-            })
-        }
-
-
-# ローカル開発用のテスト
-if __name__ == "__main__":
-    # テストイベント
-    test_event = {
-        'httpMethod': 'GET',
-        'path': '/api/episodes',
-        'queryStringParameters': {
-            'page': '1',
-            'limit': '10'
-        }
-    }
+    Returns:
+        dict: API Gatewayレスポンス
+    """
+    logger.info(f"Received event: {json.dumps(event)}")
     
-    # Lambda関数を実行
-    response = lambda_handler(test_event, None)
-    print(json.dumps(response, indent=2, ensure_ascii=False))
+    return handle_request(event, context)
