@@ -36,3 +36,7 @@ samconfig.toml
 # 一時ファイル
 tmp/
 temp/
+
+# ローカルサーバー用テストデータ
+local_data/
+local_audio/
