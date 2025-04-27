@@ -12,7 +12,8 @@ LOCAL_AUDIO_DIR = os.path.join(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))), 'local_audio')
 
 # AWS環境用設定
-S3_BUCKET = os.environ.get('S3_BUCKET', 'news-audio-content')
+S3_BUCKET = os.environ.get(
+    'S3_BUCKET_NAME', 'news-audio-files-kenchang198-dev')
 # 音声ファイルは data/audio/...
 S3_PREFIX = os.environ.get('S3_PREFIX', 'data/audio/')
 # メタデータは data/metadata/...
@@ -29,7 +30,7 @@ CORS_HEADERS = {
 # ファイルパス設定（環境によって切り替え）
 
 
-def get_metadata_path(episode_id=None):
+def get_episodes_data_path(episode_id=None):
     """エピソードメタデータのパスを取得
 
     Args:
@@ -62,6 +63,25 @@ def get_metadata_path(episode_id=None):
         return LOCAL_DATA_DIR
 
 
+def get_metadata_path(episode_id):
+    """エピソードIDに基づくメタデータファイルのパスを取得
+
+    Args:
+        episode_id: エピソードID
+
+    Returns:
+        str: メタデータファイルのパスまたはS3キー
+    """
+    if IS_LAMBDA:
+        # S3: S3_METADATA_PREFIX/metadata_<episode_id>.json
+        metadata_key = f"{S3_METADATA_PREFIX}metadata_{episode_id}.json"
+        return metadata_key
+    else:
+        # ローカル環境: LOCAL_DATA_DIR/metadata/metadata_<episode_id>.json
+        metadata_dir = os.path.join(LOCAL_DATA_DIR, "metadata")
+        return os.path.join(metadata_dir, f"metadata_{episode_id}.json")
+
+
 def get_episodes_list_path():
     """エピソード一覧ファイルのパスを取得
 
@@ -90,4 +110,5 @@ def build_audio_url(audio_key):
         return f"{base_url}/{audio_key}"
     else:
         # ローカル開発環境ではホスト名とポートを使用
-        return f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{os.path.basename(audio_key)}"
+        filename = os.path.basename(audio_key)
+        return f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"

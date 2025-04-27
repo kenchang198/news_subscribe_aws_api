@@ -6,8 +6,9 @@ from botocore.exceptions import ClientError
 import traceback
 
 from src.config import (
-    IS_LAMBDA, CORS_HEADERS, get_metadata_path,
-    get_episodes_list_path, LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT
+    IS_LAMBDA, CORS_HEADERS, get_episodes_data_path,
+    get_episodes_list_path, get_metadata_path,
+    LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT, S3_BUCKET
 )
 
 logger = logging.getLogger()
@@ -15,7 +16,6 @@ logger.setLevel(logging.INFO)
 
 # S3クライアント（Lambda環境でのみ初期化）
 s3_client = boto3.client('s3') if IS_LAMBDA else None
-s3_bucket = os.environ.get('S3_BUCKET', 'news-audio-content')
 
 
 def build_response(status_code, body):
@@ -48,7 +48,7 @@ def get_episodes():
             # AWS環境: S3からデータ取得
             try:
                 response = s3_client.get_object(
-                    Bucket=s3_bucket, Key=episodes_path)
+                    Bucket=S3_BUCKET, Key=episodes_path)
                 episodes = json.loads(response['Body'].read().decode('utf-8'))
             except ClientError as e:
                 logger.error(f"S3からのエピソード一覧取得エラー: {str(e)}")
@@ -87,13 +87,13 @@ def get_episode(episode_id):
         dict: APIレスポンス
     """
     try:
-        metadata_path = get_metadata_path(episode_id)
+        episodes_data_path = get_episodes_data_path(episode_id)
 
         if IS_LAMBDA:
             # AWS環境: S3からデータ取得
             try:
                 response = s3_client.get_object(
-                    Bucket=s3_bucket, Key=metadata_path)
+                    Bucket=S3_BUCKET, Key=episodes_data_path)
                 episode = json.loads(response['Body'].read().decode('utf-8'))
             except ClientError as e:
                 logger.error(f"S3からのエピソード取得エラー: {str(e)}")
@@ -101,7 +101,7 @@ def get_episode(episode_id):
         else:
             # ローカル環境: ファイルシステムからデータ取得
             try:
-                with open(metadata_path, 'r', encoding='utf-8') as f:
+                with open(episodes_data_path, 'r', encoding='utf-8') as f:
                     episode = json.load(f)
 
                 # S3のURLをローカル環境用に置き換える
@@ -121,7 +121,7 @@ def get_episode(episode_id):
                     episode['outro_audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
 
             except FileNotFoundError:
-                logger.error(f"エピソードファイルが見つかりません: {metadata_path}")
+                logger.error(f"エピソードファイルが見つかりません: {episodes_data_path}")
                 return build_response(404, {"error": f"Episode {episode_id} not found"})
 
         return build_response(200, episode)
@@ -149,7 +149,7 @@ def get_article_audio(article_id, language='ja'):
             try:
                 episodes_path = get_episodes_list_path()
                 response = s3_client.get_object(
-                    Bucket=s3_bucket, Key=episodes_path)
+                    Bucket=S3_BUCKET, Key=episodes_path)
                 episodes_data = json.loads(
                     response['Body'].read().decode('utf-8'))
 
@@ -167,9 +167,9 @@ def get_article_audio(article_id, language='ja'):
 
                     # エピソード詳細を取得
                     try:
-                        metadata_path = get_metadata_path(episode_id)
+                        episodes_data_path = get_episodes_data_path(episode_id)
                         response = s3_client.get_object(
-                            Bucket=s3_bucket, Key=metadata_path)
+                            Bucket=S3_BUCKET, Key=episodes_data_path)
                         episode_detail = json.loads(
                             response['Body'].read().decode('utf-8'))
 
@@ -197,6 +197,52 @@ def get_article_audio(article_id, language='ja'):
 
     except Exception as e:
         logger.error(f"記事音声取得エラー: {str(e)}")
+        logger.error(traceback.format_exc())
+        return build_response(500, {"error": "Internal server error"})
+
+
+def get_playlist(episode_id):
+    """エピソードのプレイリストを取得
+
+    Args:
+        episode_id: エピソードID
+
+    Returns:
+        dict: APIレスポンス（プレイリスト情報）
+    """
+    try:
+        metadata = None
+
+        # メタデータファイルの取得を試みる
+        try:
+            if IS_LAMBDA:
+                metadata_path = get_metadata_path(episode_id)
+                metadata_response = s3_client.get_object(
+                    Bucket=S3_BUCKET, Key=metadata_path)
+                metadata = json.loads(
+                    metadata_response['Body'].read().decode('utf-8'))
+            else:
+                metadata_path = get_metadata_path(episode_id)
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+        except (ClientError, FileNotFoundError):
+            # メタデータファイルが存在しない場合はエラーを返す
+            logger.info(f"メタデータファイルが見つかりません: {episode_id}")
+            return build_response(404, {"error": f"Metadata for episode {episode_id} not found"})
+        except Exception as e:
+            logger.error(f"メタデータ取得エラー: {str(e)}")
+            return build_response(500, {"error": "Failed to get metadata"})
+
+        # メタデータからプレイリストを直接取得
+        if 'playlist' in metadata:
+            return build_response(200, {"playlist": metadata['playlist']})
+        else:
+            # プレイリストがない場合は空のリストを返す
+            return build_response(200, {"playlist": []})
+
+    except Exception as e:
+        logger.error(f"プレイリスト取得エラー: {str(e)}")
         logger.error(traceback.format_exc())
         return build_response(500, {"error": "Internal server error"})
 
@@ -237,8 +283,16 @@ def handle_request(event, context=None):
         if path == '/episodes' or path == '/api/episodes':
             return get_episodes()
         elif path.startswith('/episodes/') or path.startswith('/api/episodes/'):
-            episode_id = path.split('/')[-1]
-            return get_episode(episode_id)
+            # エピソードIDのみか、playlist指定かを判定
+            path_parts = path.split('/')
+            # パスの末尾がplaylistの場合
+            if path_parts[-1] == 'playlist':
+                episode_id = path_parts[-2]
+                return get_playlist(episode_id)
+            # 通常のエピソード取得
+            else:
+                episode_id = path_parts[-1]
+                return get_episode(episode_id)
         elif path.startswith('/api/articles/') and path.endswith('/audio'):
             # /api/articles/{article_id}/audio 形式から抽出
             article_id = path.split('/')[-2]
