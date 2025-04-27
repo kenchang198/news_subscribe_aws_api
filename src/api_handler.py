@@ -242,8 +242,9 @@ def handle_request(event, context=None):
         elif path.startswith('/api/articles/') and path.endswith('/audio'):
             # /api/articles/{article_id}/audio 形式から抽出
             article_id = path.split('/')[-2]
-            language = event.get('queryStringParameters',
-                                 {}).get('language', 'ja')
+            # queryStringParametersがNoneの場合にも対応
+            query_params = event.get('queryStringParameters') or {}
+            language = query_params.get('language', 'ja')
             return get_article_audio(article_id, language)
         elif path == '/health':
             return get_health()
