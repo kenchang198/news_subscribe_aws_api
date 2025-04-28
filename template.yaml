@@ -46,7 +46,7 @@ Resources:
         Variables:
           S3_BUCKET: !Ref S3BucketName
           S3_PREFIX: audio/
-          S3_METADATA_PREFIX: metadata/
+          S3_METADATA_PREFIX: data/metadata/
           API_STAGE: !Ref Stage
       Policies:
         - Version: 2012-10-17
