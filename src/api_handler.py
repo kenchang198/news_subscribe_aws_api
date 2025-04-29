@@ -8,8 +8,10 @@ import traceback
 from src.config import (
     IS_LAMBDA, CORS_HEADERS, get_episodes_data_path,
     get_episodes_list_path, get_metadata_path,
-    LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT, S3_BUCKET
+    LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT, S3_BUCKET,
+    API_DOMAIN, API_STAGE
 )
+from src.audio_proxy import lambda_handler as audio_proxy_handler
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -95,6 +97,82 @@ def get_episode(episode_id):
                 response = s3_client.get_object(
                     Bucket=S3_BUCKET, Key=episodes_data_path)
                 episode = json.loads(response['Body'].read().decode('utf-8'))
+
+                # S3バケットURLを署名付きURLまたはAPI Gateway経由のURLに変換
+                # 記事の音声URL変換
+                from src.config import build_audio_url
+                logger.info("エピソード音声URL変換処理を開始")
+                
+                # 記事の音声URL変換
+                for article in episode.get('articles', []):
+                    # 通常の音声URL変換
+                    if 'audio_url' in article and article['audio_url']:
+                        original_url = article['audio_url']
+                        
+                        # 既に署名付きURLの場合はスキップ
+                        if isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url:
+                            logger.info(f"既に署名付きURLが設定されています: {original_url}")
+                            continue
+                            
+                        # S3 URLからキーを抽出
+                        if isinstance(original_url, str) and original_url.startswith('https://') and f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                            audio_key = original_url.split(f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                            logger.info(f"S3 URLからキー抽出: {audio_key}")
+                            
+                            # 署名付きURLまたはAPI Gateway経由のURLを生成
+                            article['audio_url'] = build_audio_url(audio_key)
+                            logger.info(f"音声URL変換結果: {article['audio_url']}")
+
+                    # 英語音声のURL変換
+                    if 'english_audio_url' in article and article['english_audio_url']:
+                        original_url = article['english_audio_url']
+                        
+                        # 既に署名付きURLの場合はスキップ
+                        if isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url:
+                            logger.info(f"既に署名付きURLが設定されています（英語）: {original_url}")
+                            continue
+                            
+                        # S3 URLからキーを抽出
+                        if isinstance(original_url, str) and original_url.startswith('https://') and f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                            audio_key = original_url.split(f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                            logger.info(f"S3 URLからキー抽出（英語）: {audio_key}")
+                            
+                            # 署名付きURLまたはAPI Gateway経由のURLを生成
+                            article['english_audio_url'] = build_audio_url(audio_key)
+                            logger.info(f"英語音声URL変換結果: {article['english_audio_url']}")
+
+                # イントロ音声のURL変換
+                if 'intro_audio_url' in episode and episode['intro_audio_url']:
+                    original_url = episode['intro_audio_url']
+                    
+                    # 既に署名付きURLの場合はスキップ
+                    if not (isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url):
+                        # S3 URLからキーを抽出
+                        if isinstance(original_url, str) and original_url.startswith('https://') and f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                            audio_key = original_url.split(f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                            logger.info(f"S3 URLからキー抽出（イントロ）: {audio_key}")
+                            
+                            # 署名付きURLまたはAPI Gateway経由のURLを生成
+                            episode['intro_audio_url'] = build_audio_url(audio_key)
+                            logger.info(f"イントロURL変換結果: {episode['intro_audio_url']}")
+
+                # アウトロ音声のURL変換
+                if 'outro_audio_url' in episode and episode['outro_audio_url']:
+                    original_url = episode['outro_audio_url']
+                    
+                    # 既に署名付きURLの場合はスキップ
+                    if not (isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url):
+                        # S3 URLからキーを抽出
+                        if isinstance(original_url, str) and original_url.startswith('https://') and f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                            audio_key = original_url.split(f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                            logger.info(f"S3 URLからキー抽出（アウトロ）: {audio_key}")
+                            
+                            # 署名付きURLまたはAPI Gateway経由のURLを生成
+                            episode['outro_audio_url'] = build_audio_url(audio_key)
+                            logger.info(f"アウトロURL変換結果: {episode['outro_audio_url']}")
+                
+                logger.info("エピソード音声URL変換処理を完了")
+
             except ClientError as e:
                 logger.error(f"S3からのエピソード取得エラー: {str(e)}")
                 return build_response(404, {"error": f"Episode {episode_id} not found"})
@@ -106,17 +184,17 @@ def get_episode(episode_id):
 
                 # S3のURLをローカル環境用に置き換える
                 for article in episode.get('articles', []):
-                    if 'audio_url' in article and article['audio_url'].startswith('https://'):
+                    if 'audio_url' in article and article['audio_url'] and article['audio_url'].startswith('https://'):
                         # S3 URLからファイル名を抽出
                         filename = article['audio_url'].split('/')[-1]
                         article['audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
 
                 # ナレーション音声URLの置き換え
-                if 'intro_audio_url' in episode and episode['intro_audio_url'].startswith('https://'):
+                if 'intro_audio_url' in episode and episode['intro_audio_url'] and episode['intro_audio_url'].startswith('https://'):
                     filename = episode['intro_audio_url'].split('/')[-1]
                     episode['intro_audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
 
-                if 'outro_audio_url' in episode and episode['outro_audio_url'].startswith('https://'):
+                if 'outro_audio_url' in episode and episode['outro_audio_url'] and episode['outro_audio_url'].startswith('https://'):
                     filename = episode['outro_audio_url'].split('/')[-1]
                     episode['outro_audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
 
@@ -177,10 +255,49 @@ def get_article_audio(article_id, language='ja'):
                         for article in episode_detail.get('articles', []):
                             if article.get('id') == article_id:
                                 # 言語に応じた音声ファイルURLを返す
+                                from src.config import build_audio_url
+
                                 if language == 'en' and article.get('english_audio_url'):
-                                    return build_response(200, {"url": article['english_audio_url']})
+                                    original_url = article['english_audio_url']
+                                    
+                                    # 既に署名付きURLの場合はそのまま返す
+                                    if isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url:
+                                        logger.info(f"既に署名付きURLが設定されています（英語）: {original_url}")
+                                        return build_response(200, {"url": original_url})
+                                    
+                                    # S3バケットのURLを署名付きURLに変換
+                                    if original_url and original_url.startswith('https://'):
+                                        if f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                                            # S3 URLからキーを抽出
+                                            audio_key = original_url.split(
+                                                f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                                            api_url = build_audio_url(
+                                                audio_key)
+                                            return build_response(200, {"url": api_url})
+                                        else:
+                                            # 既にAPI Gateway URL等の場合はそのまま返す
+                                            return build_response(200, {"url": original_url})
+
                                 elif article.get('audio_url'):
-                                    return build_response(200, {"url": article['audio_url']})
+                                    original_url = article['audio_url']
+                                    
+                                    # 既に署名付きURLの場合はそのまま返す
+                                    if isinstance(original_url, str) and original_url.startswith(('https://', 'http://')) and 'X-Amz-Signature=' in original_url:
+                                        logger.info(f"既に署名付きURLが設定されています: {original_url}")
+                                        return build_response(200, {"url": original_url})
+                                    
+                                    # S3バケットのURLを署名付きURLに変換
+                                    if original_url and original_url.startswith('https://'):
+                                        if f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                                            # S3 URLからキーを抽出
+                                            audio_key = original_url.split(
+                                                f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                                            api_url = build_audio_url(
+                                                audio_key)
+                                            return build_response(200, {"url": api_url})
+                                        else:
+                                            # 既にAPI Gateway URL等の場合はそのまま返す
+                                            return build_response(200, {"url": original_url})
                     except ClientError:
                         # エピソード詳細が取得できなければスキップ
                         continue
@@ -221,11 +338,104 @@ def get_playlist(episode_id):
                     Bucket=S3_BUCKET, Key=metadata_path)
                 metadata = json.loads(
                     metadata_response['Body'].read().decode('utf-8'))
+
+                # S3バケットURLをAPI Gateway経由のURLまたは署名付きURLに変換
+                if 'playlist' in metadata:
+                    from src.config import build_audio_url
+                    for item in metadata['playlist']:
+                        if 'audio_url' in item and item['audio_url']:
+                            original_url = item['audio_url']
+                            
+                            # デバッグ出力
+                            logger.info(f"元のaudio_url: {original_url}")
+
+                            # 処理対象URLがすでに署名付きURLの場合はスキップ
+                            if isinstance(original_url, str) and (
+                                (original_url.startswith('https://') and 'X-Amz-Signature=' in original_url) or
+                                (original_url.startswith('http://') and 'X-Amz-Signature=' in original_url)
+                            ):
+                                logger.info(f"  既に署名付きURLが設定されています: {original_url}")
+                                continue
+                            
+                            # URLパスから正しいファイルパスまたはキーを抽出
+                            audio_key = None
+                            
+                            if original_url.startswith('/audio/'):
+                                # /audio/プレフィックスがある場合
+                                audio_key = original_url[7:]  # "/audio/"の後の部分
+                                logger.info(f"  /audio/プレフィックス後: {audio_key}")
+                                
+                                # URLスキームが含まれている異常パターン: /audio/https://...
+                                if audio_key.startswith(('http://', 'https://')):
+                                    audio_key = audio_key.split('/')[-1]  # ファイル名のみ抽出
+                                    logger.info(f"  異常パターン検出 - ファイル名抽出: {audio_key}")
+                            
+                            elif original_url.startswith(('https://', 'http://')):
+                                # 完全なURLの場合
+                                logger.info(f"  完全なURLを検出: {original_url}")
+                                
+                                if f"{S3_BUCKET}.s3.amazonaws.com/" in original_url:
+                                    # S3 URL
+                                    audio_key = original_url.split(f"{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                                    logger.info(f"  S3 URL処理 - キー抽出: {audio_key}")
+                                else:
+                                    # その他のURL
+                                    audio_key = original_url.split('/')[-1]  # ファイル名のみ抽出
+                                    logger.info(f"  その他のURL処理 - ファイル名抽出: {audio_key}")
+                            
+                            else:
+                                # その他の形式（単純なファイル名など）
+                                audio_key = original_url
+                                logger.info(f"  シンプルなパス処理: {audio_key}")
+                            
+                            # 署名付きURLまたはAPI Gateway経由のURLを生成
+                            item['audio_url'] = build_audio_url(audio_key)
+                            
+                            # 変換結果を記録
+                            logger.info(f"変換後のaudio_url: {item['audio_url']}")
+                            
+                            # 署名付きURLの生成に失敗した場合の最終チェック
+                            if item['audio_url'] and '/audio/http' in item['audio_url']:
+                                # 異常な形式が残っている場合は修正
+                                logger.info(f"  最終チェックで異常を検出: {item['audio_url']}")
+                                parts = item['audio_url'].split('/audio/')
+                                if len(parts) > 1 and parts[1].startswith(('http://', 'https://')):
+                                    filename = parts[1].split('/')[-1]
+                                    item['audio_url'] = build_audio_url(filename)
+                                    logger.info(f"  最終修正を適用: {item['audio_url']}")
+
             else:
                 metadata_path = get_metadata_path(episode_id)
                 if os.path.exists(metadata_path):
                     with open(metadata_path, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
+
+                    # ローカル環境でもS3 URLを変換
+                    if 'playlist' in metadata:
+                        for item in metadata['playlist']:
+                            if 'audio_url' in item and item['audio_url']:
+                                audio_url = item['audio_url']
+
+                                # 既に/audio/が付いている場合
+                                if audio_url.startswith('/audio/'):
+                                    # "/audio/"の後の部分
+                                    after_prefix = audio_url[7:]
+
+                                    if after_prefix.startswith('http'):
+                                        # URLスキームが含まれている場合はファイル名のみ抽出
+                                        filename = after_prefix.split('/')[-1]
+                                        item['audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
+                                    else:
+                                        # 通常の相対パスの場合は既に適切
+                                        item['audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{after_prefix}"
+                                elif audio_url.startswith('https://') or audio_url.startswith('http://'):
+                                    # 完全なURLの場合、ファイル名のみを抽出
+                                    filename = audio_url.split('/')[-1]
+                                    item['audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
+                                else:
+                                    # その他の形式（単純なファイル名など）
+                                    item['audio_url'] = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{audio_url}"
+
         except (ClientError, FileNotFoundError):
             # メタデータファイルが存在しない場合はエラーを返す
             logger.info(f"メタデータファイルが見つかりません: {episode_id}")
@@ -267,6 +477,50 @@ def handle_request(event, context=None):
         dict: API Gatewayレスポンス
     """
     try:
+        # API Gatewayのドメインを取得（リクエストヘッダーから）
+        if IS_LAMBDA:
+            # 環境変数が設定されていなければリクエストから動的に取得
+            if not API_DOMAIN and 'headers' in event and event['headers']:
+                logger.info("API_DOMAINが設定されていないため、リクエストから取得を試みます")
+
+                # リクエスト情報をログに出力
+                if 'headers' in event:
+                    logger.info(f"リクエストヘッダー: {json.dumps(event['headers'])}")
+                if 'requestContext' in event:
+                    logger.info(
+                        f"リクエストコンテキスト: {json.dumps(event['requestContext'])}")
+
+                # Host ヘッダーからドメインを取得
+                if 'Host' in event['headers']:
+                    host = event['headers']['Host']
+                    # プロトコルはHTTPSを想定
+                    stage_prefix = f"/{API_STAGE}" if API_STAGE else ""
+                    domain = f"https://{host}{stage_prefix}"
+                    # 環境変数を一時的に上書き
+                    os.environ['API_DOMAIN'] = domain
+                    logger.info(f"Host ヘッダーからAPI Domain設定: {domain}")
+                # リクエストコンテキストからドメインを取得（API Gateway v2形式）
+                elif 'requestContext' in event and 'domainName' in event['requestContext']:
+                    host = event['requestContext']['domainName']
+                    stage = event['requestContext'].get('stage', API_STAGE)
+                    stage_prefix = f"/{stage}" if stage else ""
+                    domain = f"https://{host}{stage_prefix}"
+                    # 環境変数を一時的に上書き
+                    os.environ['API_DOMAIN'] = domain
+                    logger.info(f"リクエストコンテキストからAPI Domain設定: {domain}")
+                # リクエストコンテキストからドメインを取得（REST API形式）
+                elif 'requestContext' in event and 'domainPrefix' in event['requestContext']:
+                    domain_prefix = event['requestContext']['domainPrefix']
+                    # デフォルトはAP-NORTHEAST-1
+                    region = os.environ.get('AWS_REGION', 'ap-northeast-1')
+                    stage = event['requestContext'].get('stage', API_STAGE)
+                    domain = f"https://{domain_prefix}.execute-api.{region}.amazonaws.com/{stage}"
+                    # 環境変数を一時的に上書き
+                    os.environ['API_DOMAIN'] = domain
+                    logger.info(f"domainPrefixからAPI Domain構築: {domain}")
+                else:
+                    logger.warning("リクエストからAPI Domainを特定できませんでした")
+
         # パスパラメータ取得
         path = event.get('path', '').rstrip('/')
         http_method = event.get('httpMethod', 'GET')
@@ -278,6 +532,24 @@ def handle_request(event, context=None):
         # GET以外のメソッドは拒否
         if http_method != 'GET':
             return build_response(405, {"error": "Method not allowed"})
+
+        # /audio/以下のパスリクエストは音声プロキシに転送
+        if path.startswith('/audio/'):
+            # audio_proxy.pyのlambda_handlerを呼び出す
+            # パスからファイルパスを抽出 (/audio/filename.mp3 -> filename.mp3)
+            file_path = path[7:]  # "/audio/"の部分を削除
+
+            # audio_proxyに必要なパラメータを設定
+            proxy_event = event.copy()
+            # pathParametersが存在しない場合は作成
+            if 'pathParameters' not in proxy_event or not proxy_event['pathParameters']:
+                proxy_event['pathParameters'] = {}
+
+            proxy_event['pathParameters']['file_path'] = file_path
+
+            # オーディオプロキシハンドラを呼び出し
+            logger.info(f"Routing to audio proxy handler: {file_path}")
+            return audio_proxy_handler(proxy_event, context)
 
         # パスによるルーティング
         if path == '/episodes' or path == '/api/episodes':

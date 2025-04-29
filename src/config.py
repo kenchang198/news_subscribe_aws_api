@@ -1,4 +1,8 @@
 import os
+import logging
+
+# ロガー設定
+logger = logging.getLogger(__name__)
 
 # 環境設定
 IS_LAMBDA = os.environ.get('AWS_EXECUTION_ENV', '').startswith('AWS_Lambda_')
@@ -19,6 +23,8 @@ S3_PREFIX = os.environ.get('S3_PREFIX', 'data/audio/')
 # メタデータは data/metadata/...
 S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'data/metadata/')
 API_STAGE = os.environ.get('API_STAGE', 'dev')
+# API GatewayのドメインをAPI_DOMAINとして環境変数から取得（デフォルト値は空文字列）
+API_DOMAIN = os.environ.get('API_DOMAIN', '')
 
 # 共通設定
 CORS_HEADERS = {
@@ -105,10 +111,83 @@ def build_audio_url(audio_key):
     Returns:
         str: 音声ファイルのURL
     """
+    # デバッグ出力
+    logger.debug(f"build_audio_url入力: {audio_key}")
+
+    # audio_keyがNoneまたは空文字列の場合
+    if not audio_key:
+        logger.warning("build_audio_url: 空の音声キーが渡されました")
+        return None
+
+    # 既にhttps://を含む完全なURLの場合（署名付きURLなど）はそのまま返す
+    if isinstance(audio_key, str) and audio_key.startswith(('https://', 'http://')):
+        logger.debug(f"完全なURLが既に指定されています: {audio_key}")
+        return audio_key
+
     if IS_LAMBDA:
-        base_url = f"https://{S3_BUCKET}.s3.amazonaws.com"
-        return f"{base_url}/{audio_key}"
+        # Lambda環境では署名付きURLを生成
+        try:
+            # audio_proxy.pyの関数をインポート
+            from src.audio_proxy import generate_presigned_url
+            
+            # 署名付きURLを生成（1時間有効）
+            presigned_url = generate_presigned_url(audio_key, expiration=3600)
+            if presigned_url:
+                logger.debug(f"署名付きURL生成成功: {presigned_url}")
+                return presigned_url
+                
+            # 署名付きURL生成に失敗した場合は従来の方法を使用
+            logger.warning(f"署名付きURL生成失敗。従来のAPIパス方式にフォールバックします: {audio_key}")
+            
+            # 以下は従来の方法（フォールバック）
+            if audio_key.startswith('/'):
+                audio_path = audio_key[1:]  # 先頭の/を削除
+            else:
+                audio_path = audio_key
+
+            # audio/プレフィックスがない場合は追加（ただし既に含まれている場合は追加しない）
+            if not audio_path.startswith('audio/'):
+                audio_path = f"audio/{audio_path}"
+
+            # APIドメインが設定されている場合は完全なURLを返す
+            if API_DOMAIN:
+                # ドメインの末尾に/がある場合は削除
+                domain = API_DOMAIN.rstrip('/')
+                url = f"{domain}/{audio_path}"
+                logger.debug(f"生成されたURL(API Domain): {url}")
+                return url
+            else:
+                # APIドメインが設定されていない場合は相対パスを返す
+                # 先頭のスラッシュを含めない
+                url = f"{audio_path}"
+                logger.debug(f"生成された相対パス: {url}")
+                return url
+                
+        except ImportError as e:
+            logger.warning(f"署名付きURL生成関数のインポートに失敗: {str(e)}")
+            # フォールバック処理
+            if audio_key.startswith('/'):
+                audio_path = audio_key[1:]
+            else:
+                audio_path = audio_key
+                
+            if not audio_path.startswith('audio/'):
+                audio_path = f"audio/{audio_path}"
+                
+            if API_DOMAIN:
+                domain = API_DOMAIN.rstrip('/')
+                return f"{domain}/{audio_path}"
+            else:
+                return f"{audio_path}"
     else:
         # ローカル開発環境ではホスト名とポートを使用
-        filename = os.path.basename(audio_key)
-        return f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
+        if audio_key.startswith('/audio/'):
+            filename = audio_key[7:]
+        elif audio_key.startswith('audio/'):
+            filename = audio_key[6:]
+        else:
+            filename = os.path.basename(audio_key)
+            
+        url = f"http://{LOCAL_HOST}:{LOCAL_PORT}/audio/{filename}"
+        logger.debug(f"生成されたローカルURL: {url}")
+        return url

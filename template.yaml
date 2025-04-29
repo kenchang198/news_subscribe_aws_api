@@ -35,6 +35,11 @@ Resources:
     Properties:
       StageName: !Ref Stage
       EndpointConfiguration: REGIONAL
+      BinaryMediaTypes:
+        - 'audio/mpeg'
+        - 'audio/wav'
+        - 'audio/*'
+        - '*/*'
 
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -48,6 +53,7 @@ Resources:
           S3_PREFIX: audio/
           S3_METADATA_PREFIX: data/metadata/
           API_STAGE: !Ref Stage
+          # API Gateway URLは設定せず、相対パスを使用
       Policies:
         - Version: 2012-10-17
           Statement:
