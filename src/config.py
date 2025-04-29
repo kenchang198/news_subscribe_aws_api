@@ -22,6 +22,8 @@ S3_BUCKET = os.environ.get(
 S3_PREFIX = os.environ.get('S3_PREFIX', 'data/audio/')
 # メタデータは data/metadata/...
 S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'data/metadata/')
+# 統合メタデータは data/unified/...
+S3_UNIFIED_PREFIX = os.environ.get('S3_UNIFIED_PREFIX', 'data/unified/')
 
 # 共通設定
 CORS_HEADERS = {
@@ -82,6 +84,25 @@ def get_metadata_path(episode_id):
     else:
         # ローカル環境: LOCAL_DATA_DIR/metadata/metadata_<episode_id>.json
         metadata_dir = os.path.join(LOCAL_DATA_DIR, "metadata")
+        return os.path.join(metadata_dir, f"metadata_{episode_id}.json")
+
+
+def get_unified_metadata_path(episode_id):
+    """統合音声メタデータファイルのパスを取得
+
+    Args:
+        episode_id: エピソードID
+
+    Returns:
+        str: 統合メタデータファイルのパスまたはS3キー
+    """
+    if IS_LAMBDA:
+        # S3: S3_UNIFIED_PREFIX/metadata_<episode_id>.json
+        metadata_key = f"{S3_UNIFIED_PREFIX}metadata_{episode_id}.json"
+        return metadata_key
+    else:
+        # ローカル環境: LOCAL_DATA_DIR/unified/metadata_<episode_id>.json
+        metadata_dir = os.path.join(LOCAL_DATA_DIR, "unified")
         return os.path.join(metadata_dir, f"metadata_{episode_id}.json")
 
 
