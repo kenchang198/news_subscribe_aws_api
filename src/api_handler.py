@@ -8,8 +8,7 @@ import traceback
 from src.config import (
     IS_LAMBDA, CORS_HEADERS, get_episodes_data_path,
     get_episodes_list_path, get_metadata_path,
-    LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT, S3_BUCKET,
-    API_DOMAIN, API_STAGE
+    LOCAL_DATA_DIR, LOCAL_HOST, LOCAL_PORT, S3_BUCKET
 )
 from src.audio_proxy import lambda_handler as audio_proxy_handler
 
@@ -477,50 +476,6 @@ def handle_request(event, context=None):
         dict: API Gatewayレスポンス
     """
     try:
-        # API Gatewayのドメインを取得（リクエストヘッダーから）
-        if IS_LAMBDA:
-            # 環境変数が設定されていなければリクエストから動的に取得
-            if not API_DOMAIN and 'headers' in event and event['headers']:
-                logger.info("API_DOMAINが設定されていないため、リクエストから取得を試みます")
-
-                # リクエスト情報をログに出力
-                if 'headers' in event:
-                    logger.info(f"リクエストヘッダー: {json.dumps(event['headers'])}")
-                if 'requestContext' in event:
-                    logger.info(
-                        f"リクエストコンテキスト: {json.dumps(event['requestContext'])}")
-
-                # Host ヘッダーからドメインを取得
-                if 'Host' in event['headers']:
-                    host = event['headers']['Host']
-                    # プロトコルはHTTPSを想定
-                    stage_prefix = f"/{API_STAGE}" if API_STAGE else ""
-                    domain = f"https://{host}{stage_prefix}"
-                    # 環境変数を一時的に上書き
-                    os.environ['API_DOMAIN'] = domain
-                    logger.info(f"Host ヘッダーからAPI Domain設定: {domain}")
-                # リクエストコンテキストからドメインを取得（API Gateway v2形式）
-                elif 'requestContext' in event and 'domainName' in event['requestContext']:
-                    host = event['requestContext']['domainName']
-                    stage = event['requestContext'].get('stage', API_STAGE)
-                    stage_prefix = f"/{stage}" if stage else ""
-                    domain = f"https://{host}{stage_prefix}"
-                    # 環境変数を一時的に上書き
-                    os.environ['API_DOMAIN'] = domain
-                    logger.info(f"リクエストコンテキストからAPI Domain設定: {domain}")
-                # リクエストコンテキストからドメインを取得（REST API形式）
-                elif 'requestContext' in event and 'domainPrefix' in event['requestContext']:
-                    domain_prefix = event['requestContext']['domainPrefix']
-                    # デフォルトはAP-NORTHEAST-1
-                    region = os.environ.get('AWS_REGION', 'ap-northeast-1')
-                    stage = event['requestContext'].get('stage', API_STAGE)
-                    domain = f"https://{domain_prefix}.execute-api.{region}.amazonaws.com/{stage}"
-                    # 環境変数を一時的に上書き
-                    os.environ['API_DOMAIN'] = domain
-                    logger.info(f"domainPrefixからAPI Domain構築: {domain}")
-                else:
-                    logger.warning("リクエストからAPI Domainを特定できませんでした")
-
         # パスパラメータ取得
         path = event.get('path', '').rstrip('/')
         http_method = event.get('httpMethod', 'GET')

@@ -22,9 +22,6 @@ S3_BUCKET = os.environ.get(
 S3_PREFIX = os.environ.get('S3_PREFIX', 'data/audio/')
 # メタデータは data/metadata/...
 S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'data/metadata/')
-API_STAGE = os.environ.get('API_STAGE', 'dev')
-# API GatewayのドメインをAPI_DOMAINとして環境変数から取得（デフォルト値は空文字列）
-API_DOMAIN = os.environ.get('API_DOMAIN', '')
 
 # 共通設定
 CORS_HEADERS = {
@@ -136,10 +133,9 @@ def build_audio_url(audio_key):
                 logger.debug(f"署名付きURL生成成功: {presigned_url}")
                 return presigned_url
                 
-            # 署名付きURL生成に失敗した場合は従来の方法を使用
-            logger.warning(f"署名付きURL生成失敗。従来のAPIパス方式にフォールバックします: {audio_key}")
+            # 署名付きURL生成に失敗した場合は相対パスを返す
+            logger.warning(f"署名付きURL生成失敗。相対パスを返します: {audio_key}")
             
-            # 以下は従来の方法（フォールバック）
             if audio_key.startswith('/'):
                 audio_path = audio_key[1:]  # 先頭の/を削除
             else:
@@ -149,23 +145,14 @@ def build_audio_url(audio_key):
             if not audio_path.startswith('audio/'):
                 audio_path = f"audio/{audio_path}"
 
-            # APIドメインが設定されている場合は完全なURLを返す
-            if API_DOMAIN:
-                # ドメインの末尾に/がある場合は削除
-                domain = API_DOMAIN.rstrip('/')
-                url = f"{domain}/{audio_path}"
-                logger.debug(f"生成されたURL(API Domain): {url}")
-                return url
-            else:
-                # APIドメインが設定されていない場合は相対パスを返す
-                # 先頭のスラッシュを含めない
-                url = f"{audio_path}"
-                logger.debug(f"生成された相対パス: {url}")
-                return url
+            # 相対パスを返す
+            url = f"{audio_path}"
+            logger.debug(f"生成された相対パス: {url}")
+            return url
                 
         except ImportError as e:
             logger.warning(f"署名付きURL生成関数のインポートに失敗: {str(e)}")
-            # フォールバック処理
+            # フォールバック処理として相対パスを返す
             if audio_key.startswith('/'):
                 audio_path = audio_key[1:]
             else:
@@ -174,11 +161,7 @@ def build_audio_url(audio_key):
             if not audio_path.startswith('audio/'):
                 audio_path = f"audio/{audio_path}"
                 
-            if API_DOMAIN:
-                domain = API_DOMAIN.rstrip('/')
-                return f"{domain}/{audio_path}"
-            else:
-                return f"{audio_path}"
+            return f"{audio_path}"
     else:
         # ローカル開発環境ではホスト名とポートを使用
         if audio_key.startswith('/audio/'):
